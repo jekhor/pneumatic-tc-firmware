@@ -15,6 +15,7 @@
  * 
  ***************************************************************/
 
+#include <Wire.h>
 #include <EEPROM.h>
 #include "EEPROMAnything.h"
 #include <DS1307RTC.h>
@@ -55,6 +56,113 @@ short int avg_pressure = 0;
 unsigned short avg_first10, avg_first64;
 unsigned int avg10 = 0, avg64 = 0;
 
+
+void raw_print_memory(){
+
+  Serial.println("EEPROM REPORT: ");
+  Serial.print("[");
+  for (int i = 0; i <= MEM_SIZE; i++)
+  {
+    int h = EEPROM.read(i);
+    Serial.print(h);
+    if (i < MEM_SIZE)
+    Serial.print(",");
+  }
+  Serial.println("]");
+
+}
+
+void erase_memory() {
+  //erase current tally
+  Serial.println("");
+  Serial.println("ERASING MEMORY ...");
+  for (int i = 0; i <= MEM_SIZE; i++){
+    EEPROM.write(i, 0);
+  }  
+  the_tally = 0; 
+  the_time_offset = 0;
+  latest_minute = 0;
+}
+
+void printDigits(int digits) {
+  //выводим время через ":"
+  Serial.print(":");
+  if (digits < 10)
+    Serial.print('0');
+  Serial.print(digits);
+}
+
+void digitalClockDisplay() {
+  Serial.print(hour());
+  printDigits(minute());
+  printDigits(second());
+  Serial.print(" ");
+  Serial.print(day());
+  Serial.print(" ");
+  Serial.print(month());
+  Serial.print(" ");
+  Serial.print(year());
+  Serial.println();
+}
+
+void print_memory() {
+  //raw_print_memory();
+  if (the_tally > 0) {
+    Serial.println("");
+    Serial.println("Count , Time (Minutes) , Speed (km/h)");
+    for (int i=1; i<= the_tally; i++){
+      Serial.print(i);
+      Serial.print(" , ");
+      long y = EEPROM.read(2*i);
+      Serial.print(y);
+      Serial.print(" , ");
+      long z = EEPROM.read((2*i)+1);
+      Serial.println(z); 
+      all_speed = (all_speed+z); //add all the speeds together to find average.
+      latest_minute = y;    
+    }
+  }
+
+  Serial.println(""); 
+  Serial.print("Total Cars, ");
+  Serial.println(the_tally);//read memory
+  Serial.print("Total Minutes Measured, ");
+  Serial.println(latest_minute);
+  Serial.print("Traffic Rate (cars per min), ");
+  if ((the_tally/latest_minute) <= 0) {
+    Serial.println("0");
+  }
+  else {
+    Serial.println(the_tally/latest_minute);
+  }
+  Serial.print("Average Car Speed (km per hour), ");
+  if ((all_speed/the_tally) <= 0) {
+    Serial.println("0");
+  }
+  else {
+    Serial.println(all_speed/the_tally);
+  }
+  Serial.println("___________________________________________________");
+}
+
+
+void make_tone() {
+  for (int thisNote = 0; thisNote < 2; thisNote++) {
+
+    //to calculate the note duration, take one second 
+    //divided by the note type.
+    //e.g. quarter note = 1000 / 4, eighth note = 1000/8, etc.
+    int noteDuration = 1000/noteDurations[thisNote];
+    tone(13, melody[thisNote],noteDuration);
+
+    //to distinguish the notes, set a minimum time between them.
+    //the note's duration + 30% seems to work well:
+    int pauseBetweenNotes = noteDuration * 1.30;
+    delay(pauseBetweenNotes);
+    //stop the tone playing:
+    noTone(13);
+  }
+}
 
 void setup() {
   pinMode(A0, INPUT);
@@ -125,27 +233,6 @@ void setup() {
   Serial.println("___________________________________________________");
 
 
-}
-
-void printDigits(int digits) {
-  //выводим время через ":"
-  Serial.print(":");
-  if (digits < 10)
-    Serial.print('0');
-  Serial.print(digits);
-}
-
-void digitalClockDisplay() {
-  Serial.print(hour());
-  printDigits(minute());
-  printDigits(second());
-  Serial.print(" ");
-  Serial.print(day());
-  Serial.print(" ");
-  Serial.print(month());
-  Serial.print(" ");
-  Serial.print(year());
-  Serial.println();
 }
 
 void loop() {
@@ -295,94 +382,6 @@ void loop() {
   }
 }
 
-
-void print_memory() {
-  //raw_print_memory();
-  if (the_tally > 0) {
-    Serial.println("");
-    Serial.println("Count , Time (Minutes) , Speed (km/h)");
-    for (int i=1; i<= the_tally; i++){
-      Serial.print(i);
-      Serial.print(" , ");
-      long y = EEPROM.read(2*i);
-      Serial.print(y);
-      Serial.print(" , ");
-      long z = EEPROM.read((2*i)+1);
-      Serial.println(z); 
-      all_speed = (all_speed+z); //add all the speeds together to find average.
-      latest_minute = y;    
-    }
-  }
-
-  Serial.println(""); 
-  Serial.print("Total Cars, ");
-  Serial.println(the_tally);//read memory
-  Serial.print("Total Minutes Measured, ");
-  Serial.println(latest_minute);
-  Serial.print("Traffic Rate (cars per min), ");
-  if ((the_tally/latest_minute) <= 0) {
-    Serial.println("0");
-  }
-  else {
-    Serial.println(the_tally/latest_minute);
-  }
-  Serial.print("Average Car Speed (km per hour), ");
-  if ((all_speed/the_tally) <= 0) {
-    Serial.println("0");
-  }
-  else {
-    Serial.println(all_speed/the_tally);
-  }
-  Serial.println("___________________________________________________");
-}
-
-
-void raw_print_memory(){
-
-  Serial.println("EEPROM REPORT: ");
-  Serial.print("[");
-  for (int i = 0; i <= MEM_SIZE; i++)
-  {
-    int h = EEPROM.read(i);
-    Serial.print(h);
-    if (i < MEM_SIZE)
-    Serial.print(",");
-  }
-  Serial.println("]");
-
-}
-
-void erase_memory() {
-  //erase current tally
-  Serial.println("");
-  Serial.println("ERASING MEMORY ...");
-  for (int i = 0; i <= MEM_SIZE; i++){
-    EEPROM.write(i, 0);
-  }  
-  the_tally = 0; 
-  the_time_offset = 0;
-  latest_minute = 0;
-}
-
-
-
-void make_tone() {
-  for (int thisNote = 0; thisNote < 2; thisNote++) {
-
-    //to calculate the note duration, take one second 
-    //divided by the note type.
-    //e.g. quarter note = 1000 / 4, eighth note = 1000/8, etc.
-    int noteDuration = 1000/noteDurations[thisNote];
-    tone(13, melody[thisNote],noteDuration);
-
-    //to distinguish the notes, set a minimum time between them.
-    //the note's duration + 30% seems to work well:
-    int pauseBetweenNotes = noteDuration * 1.30;
-    delay(pauseBetweenNotes);
-    //stop the tone playing:
-    noTone(13);
-  }
-}
 
 
 
