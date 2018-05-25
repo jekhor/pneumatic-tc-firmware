@@ -25,8 +25,10 @@ USER_LIB_PATH    :=  $(PROJECT_DIR)/lib
 
 ### BOARD_TAG
 ### It must be set to the board you are currently using. (i.e uno, mega2560, etc.)
-BOARD_TAG         = mega
-BOARD_SUB         = atmega1280
+#BOARD_TAG         = mega
+#BOARD_SUB         = atmega1280
+BOARD_TAG         = pro
+BOARD_SUB         = 16MHzatmega328
 #MCU               = atmega1280
 
 
