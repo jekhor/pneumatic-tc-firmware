@@ -15,6 +15,8 @@
  * 
  ***************************************************************/
 
+//#define DEBUG_MEMORY
+
 #include <Wire.h>
 #include <EEPROM.h>
 #include "EEPROMAnything.h"
@@ -22,212 +24,248 @@
 #include <Time.h>
 #include <SimpleTimer.h>
 #include <Filters.h>
+#include <SPI.h>
+#include <SD.h>
+#include <avr/pgmspace.h>
 
+#include "uart.h"
 #include <stdio.h>
+
+#ifdef DEBUG_MEMORY
+#include <MemoryFree.h>
+#endif
+
+#define LOCAL_TIME_OFFSET (3 * SECS_PER_HOUR)
 
 #define NOTE_C6  1047
 #define NOTE_E6  1319
 #define NOTE_G6  1568
-#define MEM_SIZE 512 //EEPROM memory size (remaining 2 bytes reserved for count)
+
+#define THRESHOLD 5
+#define HYSTERESIS 2
 
 // notes in the melody:
-int melody[] = {
-	NOTE_C6, NOTE_G6};
-int noteDurations[] = {
-	8,8};
-int trigger_value; // pressure reading threshold for identifying a bike is pressing.
-int threshold = 9; //change this amount if necessary. tunes sensitivity.
-int the_tally; //total amount of sensings.
-int incomingByte = 0;   // for incoming serial data
-int the_time_offset; // in case of power out, it starts counting time from when the power went out.
+int16_t the_tally; //total amount of sensings.
+char incomingByte = 0;   // for incoming serial data
+uint16_t the_time_offset; // in case of power out, it starts counting time from when the power went out.
 int latest_minute;
-int the_wheel_delay = 50; //number of milliseconds to create accurate readings for cars. prevents bounce.
-int car_timeout = 3000;
+const int the_wheel_delay = 60; //number of milliseconds to create accurate readings for cars. prevents bounce.
+const int car_timeout = 1000; // 3,8 km/h minimal speed
 long the_wheel_timer; //for considering that double wheel-base of cars, not to count them twice.
-int the_max = 0;
-int is_measuring = 0;
-int count_this = 0;
-int strike_number = 0;
-float wheel_spacing = 1.100; //average spacing between wheels of car (METERS)
+short unsigned int the_max = 0;
+bool is_measuring = 0;
+bool count_this = 0;
+uint8_t strike_number = 0;
+const float wheel_spacing = 1.06; //average spacing between wheels of car (METERS)
 float first_wheel = 0.0000000;
 float second_wheel= 0.0000000;
-float wheel_time = 0.0000000;
-float the_speed = 0.0000000;
-int time_slot;
-int speed_slot;
+short int time_slot;
+short int speed_slot;
 int all_speed;
+const int sd_CS = 10;
+bool raw_measuring = 0;
 
-FILE uartstream;
+bool sdReady = 0;
+//Sd2Card card;
+//SdVolume volume;
+//SdFile root;
 
-#define RX_BUFSIZE 80
+File dataFile;
+bool dataFileOpened = 0;
+uint8_t dataFileHour;
+char logFilename[13]; /* 8.3 filename + \0 */
 
-int uart_putchar(char c, FILE *stream)
-{
-	if (c == '\n')
-		Serial.write('\r');
-	Serial.write(c);
-	return 0;
+void setup_sd() {
+	File root;
+	Serial.print(F("\nInit SD..."));
+
+	if (SD.begin(sd_CS)) {
+		Serial.println(F("SD OK"));
+		sdReady = 1;
+	} else {
+		Serial.println(F("SD init failed"));
+		return;
+	}
+
+#ifdef DEBUG_MEMORY
+	Serial.print(F("freeMemory()="));
+	Serial.println(freeMemory());
+#endif
 }
 
-/*
- * Receive a character from the UART Rx.
- *
- * This features a simple line-editor that allows to delete and
- * re-edit the characters entered, until either CR or NL is entered.
- * Printable characters entered will be echoed using uart_putchar().
- *
- * Editing characters:
- *
- * . \b (BS) or \177 (DEL) delete the previous character
- * . ^u kills the entire input buffer
- * . ^w deletes the previous word
- * . ^r sends a CR, and then reprints the buffer
- * . \t will be replaced by a single space
- *
- * All other control characters will be ignored.
- *
- * The internal line buffer is RX_BUFSIZE (80) characters long, which
- * includes the terminating \n (but no terminating \0).  If the buffer
- * is full (i. e., at RX_BUFSIZE-1 characters in order to keep space for
- * the trailing \n), any further input attempts will send a \a to
- * uart_putchar() (BEL character), although line editing is still
- * allowed.
- *
- * Input errors while talking to the UART will cause an immediate
- * return of -1 (error indication).  Notably, this will be caused by a
- * framing error (e. g. serial line "break" condition), by an input
- * overrun, and by a parity error (if parity was enabled and automatic
- * parity recognition is supported by hardware).
- *
- * Successive calls to uart_getchar() will be satisfied from the
- * internal buffer until that buffer is emptied again.
- */
-int
-uart_getchar(FILE *stream)
-{
-	uint8_t c;
-	char *cp, *cp2;
-	static char b[RX_BUFSIZE];
-	static char *rxp;
-
-	if (rxp == 0)
-		for (cp = b;;)
-		{
-			while (Serial.available() <= 0) {};
-
-			c = Serial.read();
-			/* behaviour similar to Unix stty ICRNL */
-			if (c == '\r')
-				c = '\n';
-			if (c == '\n')
-			{
-				*cp = c;
-				uart_putchar(c, stream);
-				rxp = b;
-				break;
-			}
-			else if (c == '\t')
-				c = ' ';
-
-			if ((c >= (uint8_t)' ' && c <= (uint8_t)'\x7e') ||
-					c >= (uint8_t)'\xa0')
-			{
-				if (cp == b + RX_BUFSIZE - 1)
-					uart_putchar('\a', stream);
-				else
-				{
-					*cp++ = c;
-					uart_putchar(c, stream);
-				}
-				continue;
-			}
-
-			switch (c)
-			{
-				case 'c' & 0x1f:
-					return -1;
-
-				case '\b':
-				case '\x7f':
-					if (cp > b)
-					{
-						uart_putchar('\b', stream);
-						uart_putchar(' ', stream);
-						uart_putchar('\b', stream);
-						cp--;
-					}
-					break;
-
-				case 'r' & 0x1f:
-					uart_putchar('\r', stream);
-					for (cp2 = b; cp2 < cp; cp2++)
-						uart_putchar(*cp2, stream);
-					break;
-
-				case 'u' & 0x1f:
-					while (cp > b)
-					{
-						uart_putchar('\b', stream);
-						uart_putchar(' ', stream);
-						uart_putchar('\b', stream);
-						cp--;
-					}
-					break;
-
-				case 'w' & 0x1f:
-					while (cp > b && cp[-1] != ' ')
-					{
-						uart_putchar('\b', stream);
-						uart_putchar(' ', stream);
-						uart_putchar('\b', stream);
-						cp--;
-					}
-					break;
-			}
-		}
-
-	c = *rxp++;
-	if (c == '\n')
-		rxp = 0;
-
-	return c;
-}
 void raw_print_memory(){
 
-	printf("EEPROM REPORT: \n");
-	printf("[");
-	for (int i = 0; i <= MEM_SIZE; i++)
+	Serial.println(F("EEPROM REPORT:"));
+	Serial.print("[");
+	for (int i = 0; i <= E2END; i++)
 	{
 		int h = EEPROM.read(i);
 		Serial.print(h);
-		if (i < MEM_SIZE)
+		if (i < E2END)
 			Serial.print(",");
 	}
-	printf("]");
+	Serial.print("]");
 
 }
 
 void erase_memory() {
 	//erase current tally
-	printf("\nERASING MEMORY ...\n");
-	for (int i = 0; i <= MEM_SIZE; i++){
+	Serial.println("");
+	Serial.println(F("ERASING..."));
+	for (int i = 0; i <= E2END; i++){
 		EEPROM.write(i, 0);
-	}  
-	the_tally = 0; 
+	}
+	the_tally = 0;
 	the_time_offset = 0;
 	latest_minute = 0;
 }
 
+/* wheel_time in ms */
+int logToEEPROM(float wheel_time) {
+	float the_speed;
+
+	the_tally++;
+	time_slot = the_tally * sizeof(uint8_t) * 2;
+	speed_slot = (the_tally*sizeof(uint8_t) * 2) + sizeof(uint8_t);
+	Serial.print(F("Count = "));
+	Serial.println(the_tally);
+	Serial.print(F("eeprom addr: "));
+	Serial.println(time_slot);
+
+	if (time_slot >= E2END) {
+		Serial.println(F("EEPROM FULL"));
+		return 1;
+	}
+
+	// Write the configuration struct to EEPROM
+	EEPROM.put(0, the_tally); //puts the value of x at the 0 address.
+	uint8_t time = ((millis()/1000)/60) + the_time_offset + 1; // the number of minutes since first record.
+	EEPROM.put(time_slot, time); //puts the value of y at address 'the_tally'.
+	the_speed = wheel_spacing/(wheel_time/1000) * 3.6;
+	if (the_speed > 0 ) {
+		Serial.print("Speed km/h ");
+		Serial.println(the_speed);
+		EEPROM.put(speed_slot, uint8_t(the_speed)); //puts the value of y at address 'the_tally'.
+	}
+	else {
+		Serial.println("no speed");
+		EEPROM.put(speed_slot, uint8_t(0)); //puts the value of y at address 'the_tally' + 1.
+	}
+
+	return  0;
+}
+
+int sdFileOpen()
+{
+	if (dataFileOpened && (hour(now()) != dataFileHour)) {
+		dataFile.close();
+		dataFileOpened = 0;
+	}
+
+	if (!dataFileOpened) {
+		time_t t = now();
+
+#ifdef DEBUG_MEMORY
+		Serial.print(F("freeMemory()="));
+		Serial.println(freeMemory());
+#endif
+		dataFileHour = hour(t);
+		snprintf(logFilename, sizeof(logFilename), "%02u%02u%02u%02u.LOG", year(t) % 100, month(t), day(t), hour(t));
+
+		dataFile = SD.open(logFilename, FILE_WRITE | O_APPEND);
+		if (dataFile) {
+			dataFileOpened = 1;
+		} else {
+			Serial.println(F("Cannot open logfile"));
+			return 1;
+		}
+	}
+
+	return 0;
+}
+
+int logToSd(float wheel_time)
+{
+	time_t time = now();
+	float speed = wheel_spacing/(wheel_time / 1000) * 3.6;
+	static char buf[21];
+
+	if (speed < 0)
+		speed = 0;
+
+	Serial.print("Speed km/h ");
+	Serial.println(speed);
+
+	if (!sdReady) {
+		return 1;
+	}
+
+	if (sdFileOpen())
+		return 1;
+
+#ifdef DEBUG_MEMORY
+		Serial.print(F("freeMemory()="));
+		Serial.println(freeMemory());
+#endif
+
+	snprintf_P(buf, sizeof(buf), PSTR("%04d-%02d-%02d %02d:%02d:%02d,"), year(time), month(time), day(time), hour(time), minute(time), second(time));
+
+	dataFile.print(time - LOCAL_TIME_OFFSET); /* UTC Unix timestamp */
+	dataFile.print(",");
+	dataFile.print(buf);
+	dataFile.println(speed);
+	dataFile.flush();
+
+	return 0;
+}
+
+void dumpSdLog()
+{
+	if (!sdReady)
+		return;
+
+	sdFileOpen();
+
+	if (dataFileOpened) {
+		dataFile.close();
+		dataFileOpened = 0;
+	}
+
+	dataFile = SD.open(logFilename, FILE_READ);
+	if (!dataFile) {
+		Serial.println(F("Failed to open file"));
+		return;
+	}
+
+	while (dataFile.available())
+		Serial.write(dataFile.read());
+
+	Serial.println("");
+	dataFile.close();
+}
+
 void printTime(time_t time)
 {
-	printf("%04d-%02d-%02d %02d:%02d:%02d\n", year(time), month(time), day(time), hour(time), minute(time), second(time));
+/*	Serial.print(year(time));
+	Serial.print("-");
+	Serial.print(month(time));
+	Serial.print("-");
+	Serial.print(day(time));
+	Serial.print(" ");
+	Serial.print(hour(time));
+	Serial.print(":");
+	Serial.print(minute(time));
+	Serial.print(":");
+	Serial.println(second(time));
+	*/
+	printf_P(PSTR("%04d-%02d-%02d %02d:%02d:%02d\n"), year(time), month(time), day(time), hour(time), minute(time), second(time));
 }
 
 void print_memory() {
 	//raw_print_memory();
 	if (the_tally > 0) {
 		Serial.println("");
-		Serial.println("Count , Time (Minutes) , Speed (km/h)");
+		Serial.println(F("Count , Time (Minutes) , Speed (km/h)"));
 		for (int i=1; i<= the_tally; i++){
 			Serial.print(i);
 			Serial.print(" , ");
@@ -235,51 +273,38 @@ void print_memory() {
 			Serial.print(y);
 			Serial.print(" , ");
 			long z = EEPROM.read((2*i)+1);
-			Serial.println(z); 
+			Serial.println(z);
 			all_speed = (all_speed+z); //add all the speeds together to find average.
-			latest_minute = y;    
+			latest_minute = y;
 		}
 	}
 
-	Serial.println(""); 
-	Serial.print("Total Cars, ");
+	Serial.println("");
+	Serial.print(F("Total Cars, "));
 	Serial.println(the_tally);//read memory
-	Serial.print("Total Minutes Measured, ");
+	Serial.print(F("Total Minutes, "));
 	Serial.println(latest_minute);
-	Serial.print("Traffic Rate (cars per min), ");
+	Serial.print(F("Traffic Rate (cars per min), "));
 	if ((the_tally/latest_minute) <= 0) {
 		Serial.println("0");
 	}
 	else {
 		Serial.println(the_tally/latest_minute);
 	}
-	Serial.print("Average Car Speed (km per hour), ");
+	Serial.print("Avg Speed km/h, ");
 	if ((all_speed/the_tally) <= 0) {
 		Serial.println("0");
 	}
 	else {
 		Serial.println(all_speed/the_tally);
 	}
-	Serial.println("___________________________________________________");
 }
 
 
 void make_tone() {
-	for (int thisNote = 0; thisNote < 2; thisNote++) {
-
-		//to calculate the note duration, take one second 
-		//divided by the note type.
-		//e.g. quarter note = 1000 / 4, eighth note = 1000/8, etc.
-		int noteDuration = 1000/noteDurations[thisNote];
-		tone(13, melody[thisNote],noteDuration);
-
-		//to distinguish the notes, set a minimum time between them.
-		//the note's duration + 30% seems to work well:
-		int pauseBetweenNotes = noteDuration * 1.30;
-		delay(pauseBetweenNotes);
-		//stop the tone playing:
-		noTone(13);
-	}
+	digitalWrite(2, 1);
+	delay(20);
+	digitalWrite(2, 0);
 }
 
 int setupRTC() {
@@ -295,7 +320,7 @@ int setupRTC() {
 		tm.Minute = 0;
 		tm.Second = 0;
 		if (!RTC.write(tm)) {
-			printf("RTC write error\n");
+			Serial.println("RTC write error");
 			ret = -1;
 		}
 	}
@@ -305,108 +330,62 @@ int setupRTC() {
 
 SimpleTimer acquireTimer;
 
-uint16_t volatile pressure_avg64_sum = 0;
-uint16_t volatile pressure_avg10_sum = 0;
-uint16_t volatile pressure_current;
-int volatile buf_samples_count = 0;
+short unsigned int volatile pressure_current;
 FilterOnePole biasFilter(LOWPASS, 0.01);
 
-
 void acquirePressure() {
-	static short int last_samples[65];
-	static int8_t tail = 0, head = 0;
-
-	int val = analogRead(A0);
-	int old64_val = last_samples[tail];
-	int old10_val;
-	int count;
+	short int val = analogRead(A0);
 
 	pressure_current = val;
 
-	if (head < tail)
-		count = (head + 65 - tail) % 65;
-	else
-		count = (head - tail) % 65;
-
 	biasFilter.input(val);
 
-//	Serial.println(val);
-//	Serial.println(biasFilter.output());
-//	printf("val: %u\thead: %u\ttail: %u\tcount: %d\tavg64: %u\tavg10: %u\n", val, head, tail, count, pressure_avg64_sum, pressure_avg10_sum);
-
-	last_samples[head] = val;
-	head++;
-	head = head % 65;
-
-	pressure_avg64_sum += val;
-	pressure_avg10_sum += val;
-
-	if (count >= 10) {
-		old10_val = head >= 10 ? last_samples[(head - 10) % 65] : last_samples[(head + 65 - 10) % 65];
-		pressure_avg10_sum -= old10_val;
-	}
-
-	if (count == 64) {
-		tail++;
-		tail = tail % 65;
-
-		pressure_avg64_sum -= old64_val;
-	}
-
-	buf_samples_count = count;
+	if (raw_measuring)
+		printf("%u %u\n", val, (short unsigned int)round(biasFilter.output()));
 }
 
-
-void setup() {
-	pinMode(A0, INPUT);
-	pinMode(2, OUTPUT);
-	pinMode(13, OUTPUT);
-	analogReference(DEFAULT);
-	Serial.begin(115200);
-
-	acquireTimer.setInterval(1, acquirePressure);
-
-	fdev_setup_stream(&uartstream, uart_putchar, uart_getchar, _FDEV_SETUP_RW);
-	stdout = &uartstream;
-	stdin = &uartstream;
-
-	// make_tone();
+void setupEEPROM() {
 	//update the tally variable from memory:
-	EEPROM_readAnything(0,  the_tally); //the tally is stored in position 0. assigns the read value to 'the_tally'.
-	EEPROM_readAnything((the_tally*2)+1, the_time_offset); //read the last time entry
+	EEPROM.get(0,  the_tally); //the tally is stored in position 0. assigns the read value to 'the_tally'.
+	EEPROM.get((the_tally*2)+1, the_time_offset); //read the last time entry
 
 	if (the_tally < 0) { //for formatting the EEPROM for a new device.
 		erase_memory(); 
 	}
 
-	//  delay(5000);
-	//  analogRead(A0);
+}
 
+void setup() {
+	pinMode(A0, INPUT);
+	pinMode(2, OUTPUT);
+	analogReference(DEFAULT);
+	Serial.begin(115200);
+
+	setup_uart();
+
+	acquireTimer.setInterval(1, acquirePressure);
+
+	setupEEPROM();
 	setupRTC();
+	setup_sd();
 
-
-
-
-	Serial.println("Hello, Welcome to the DIY Traffic Counter");
-	Serial.println("___________________________________________________");
 	if (timeStatus() != timeSet)
-		Serial.println("Unable to sync with the RTC"); //синхронизация не удаласть
+		Serial.println("RTC fail"); //синхронизация не удаласть
 	else
-		Serial.println("RTC has set the system time");
+		Serial.println("RTC set");
 
-	printf("Current time: ");
 	printTime(now());
 
 	Serial.println("");
-	Serial.print("Threshold: ");
-	Serial.println(threshold);
-	Serial.println("___________________________________________________");
+	Serial.print(F("Threshold: "));
+	Serial.println(THRESHOLD);
 	Serial.println("");
-	Serial.println("1. PRINT MEMORY");
-	Serial.println("2. ERASE MEMORY");
-	Serial.println("3. Set Time");
-	Serial.println("4. Run raw pressure measurement");
-	Serial.println("___________________________________________________");
+//	Serial.println(F("1. PRINT"));
+//	Serial.println(F("2. ERASE"));
+	Serial.println(F("3. Set Time"));
+	Serial.println(F("4. Run/stop measurement"));
+	Serial.println(F("5. Dump current file"));
+	Serial.println(F("6. Close all files"));
 
 	biasFilter.setToNewValue(analogRead(A0));
 
@@ -417,20 +396,19 @@ void handleMenu() {
 		// read the incoming byte:
 		incomingByte = Serial.read();
 		if (incomingByte == '1') {
-			print_memory();
+//			print_memory();
 		}
 		if (incomingByte == '2') {
-			Serial.println("");
-			Serial.println("ARE YOU SURE YOU WANT TO ERASE THE MEMORY? Enter Y/N");
+//			Serial.println("");
+//			Serial.println(F("ERASE? Y/N"));
 		}
-		if (incomingByte == 'N' || incomingByte == 'n') {
-			Serial.println("MEMORY ERASE CANCELLED");
-			Serial.println("___________________________________________________");
-		}
-		if (incomingByte == 'Y' || incomingByte == 'y') {
-			erase_memory();  
-			print_memory();
-		}
+//		if (incomingByte == 'N' || incomingByte == 'n') {
+//			Serial.println(F("CANCELLED"));
+//		}
+//		if (incomingByte == 'Y' || incomingByte == 'y') {
+//			erase_memory();  
+//			print_memory();
+//		}
 		if (incomingByte == '3') {
 			String s;
 			unsigned short int y;
@@ -438,25 +416,33 @@ void handleMenu() {
 			while (Serial.available() > 0)
 				Serial.read();
 
-			printf("Enter date and time as YYYY-MM-DD HH:MM:SS\n");
-			scanf("%04hu-%02hhu-%02hhu %02hhu:%02hhu:%02hhu", &y, &tm.Month, &tm.Day, &tm.Hour, &tm.Minute, &tm.Second);
+			Serial.println(F("Enter datetime as YYYY-MM-DD HH:MM:SS"));
+			scanf_P(PSTR("%04hu-%02hhu-%02hhu %02hhu:%02hhu:%02hhu"), &y, &tm.Month, &tm.Day, &tm.Hour, &tm.Minute, &tm.Second);
 
 			tm.Year = y - 1970;
 			if (!RTC.write(tm))
-				printf("RTC write error\n");
+				Serial.println(F("RTC error"));
 
 			setTime(makeTime(tm));
 			printTime(now());
 			if (!RTC.read(tm))
-				printf("RTC read error\n");
+				Serial.println(F("RTC error"));
 
 			printTime(makeTime(tm));
 		}
-		if (incomingByte == '4') {
-			while (1) {
-				acquireTimer.run();
-//				printf("%u %u %u\n", pressure_current, pressure_avg10_sum / 10, pressure_avg64_sum / 64);
+		if (incomingByte == '4')
+			raw_measuring = !raw_measuring;
+
+		if (incomingByte == '5')
+			dumpSdLog();
+		if (incomingByte == '6') {
+			if (dataFileOpened) {
+				dataFile.close();
+				dataFileOpened = 0;
 			}
+			SD.end();
+			sdReady = 0;
+			Serial.println(F("Card closed"));
 		}
 	}
 }
@@ -464,30 +450,28 @@ void handleMenu() {
 void loop() {
 	acquireTimer.run();
 
-	int val = pressure_current;
+	short unsigned int val = pressure_current;
+	static short unsigned int release_trigger_value = 0;
+	short unsigned int trigger_value; // pressure reading threshold for identifying a bike is pressing.
 
 	// read local air pressure and create offset.
-	trigger_value = pressure_avg64_sum / 64 + threshold;
+	trigger_value = round(biasFilter.output()) + THRESHOLD;
 
 	//1 - TUBE IS PRESSURIZED INITIALLY
-	if ((val > trigger_value) && (buf_samples_count == 64)) {
-		Serial.print(pressure_avg10_sum / 10);
-		Serial.print(" ");
-		Serial.print(pressure_avg64_sum / 64);
-		Serial.print(" ");
-		Serial.println(val);
+	if (val >= trigger_value) {
+		release_trigger_value = trigger_value - HYSTERESIS;
 
 		if (strike_number == 0 && is_measuring == 0) { // FIRST HIT
 			Serial.println("");
-			Serial.println("Car HERE. ");
-			printTime(now());
+			Serial.println(F("Wheel 1"));
 			first_wheel = millis(); 
+//			printTime(now());
 			is_measuring = 1;
 		}
 		if (strike_number == 1 && is_measuring == 1) { // SECOND HIT
-			Serial.println("Car GONE.");
-			printTime(now());
+			Serial.println(F("Wheel 2"));
 			second_wheel = millis();
+//			printTime(now());
 			is_measuring = 0;
 		}
 
@@ -502,7 +486,7 @@ void loop() {
 
 
 	//3 - TUBE IS RELEASED
-	if ( pressure_current < trigger_value - 1 && count_this == 0) { //released by either wheel
+	if ( pressure_current < release_trigger_value && count_this == 0) { //released by either wheel
 		if (strike_number == 0 && is_measuring == 1 && (millis() - first_wheel > the_wheel_delay)) {
 			strike_number = 1;
 		}
@@ -513,37 +497,24 @@ void loop() {
 
 
 	//4 - PRESSURE READING IS ACCEPTED AND RECORDED
-	if (((pressure_current < trigger_value - 1))
+	if (((pressure_current < release_trigger_value))
 	&& ((count_this == 1 && is_measuring == 0)
-	|| ((millis() - first_wheel > car_timeout) && (is_measuring == 1)))) { //has been released for enough time.
-		make_tone(); //will buzz if buzzer attached, also LED on pin 13 will flash.
-		the_tally++; 
-		time_slot = the_tally*2;
-		speed_slot = (the_tally*2)+1;
-		Serial.print("Pressure Reached = ");
+	|| ((millis() - first_wheel > car_timeout) && (is_measuring == 1)))) {
+		float wheel_time;
+		make_tone();
+
+		wheel_time = second_wheel - first_wheel;
+
+		printTime(now());
+		Serial.print(F("max press = "));
 		Serial.println(the_max);
-		Serial.print("Current Count = ");
-		Serial.println(the_tally);
-		// Write the configuration struct to EEPROM
-		EEPROM_writeAnything(0, the_tally); //puts the value of x at the 0 address.
-		//Serial.print("time between wheels = ");
-		wheel_time = ((second_wheel - first_wheel)/3600000);
-		//Serial.println(wheel_time);
-		int time = ((millis()/1000)/60) + the_time_offset + 1; // the number of seconds since first record.
-		EEPROM_writeAnything(time_slot, time); //puts the value of y at address 'the_tally'.
-		the_speed = (wheel_spacing/1000)/wheel_time;
-		if (the_speed > 0 ) {
-			Serial.print("Estimated Speed (km/h) = ");
-			Serial.println(the_speed);
-			EEPROM_writeAnything(speed_slot, int(the_speed)); //puts the value of y at address 'the_tally'.
-		}
-		else {
-			Serial.println("Speed not measureable");
-			EEPROM_writeAnything(speed_slot, 0); //puts the value of y at address 'the_tally'.
-		}
+//		logToEEPROM(wheel_time);
+
+		logToSd(wheel_time);
+
 
 		//RESET ALL VALUES
-		the_max = 0; 
+		the_max = 0;
 		strike_number = 0;
 		count_this = 0;
 		is_measuring = 0;
