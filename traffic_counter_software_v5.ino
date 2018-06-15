@@ -41,8 +41,10 @@
 #define NOTE_E6  1319
 #define NOTE_G6  1568
 
-#define THRESHOLD 5
-#define HYSTERESIS 2
+#define THRESHOLD 9
+#define HYSTERESIS 4
+
+#define LED_PIN 4
 
 // notes in the melody:
 int16_t the_tally; //total amount of sensings.
@@ -302,9 +304,9 @@ void print_memory() {
 
 
 void make_tone() {
-	digitalWrite(2, 1);
+	digitalWrite(LED_PIN, 1);
 	delay(20);
-	digitalWrite(2, 0);
+	digitalWrite(LED_PIN, 0);
 }
 
 int setupRTC() {
@@ -357,22 +359,41 @@ void setupEEPROM() {
 
 void setup() {
 	pinMode(A0, INPUT);
-	pinMode(2, OUTPUT);
-	analogReference(DEFAULT);
+	pinMode(LED_PIN, OUTPUT);
+	analogReference(INTERNAL);
+	analogRead(A0); // reset ADC value after change reference
+
 	Serial.begin(115200);
 
+	digitalWrite(LED_PIN, 1);
+	delay(20);
+	digitalWrite(LED_PIN, 0);
+	delay(200);
+
 	setup_uart();
-
-	acquireTimer.setInterval(1, acquirePressure);
-
 	setupEEPROM();
 	setupRTC();
+
+	digitalWrite(LED_PIN, 1);
+	delay(20);
+	digitalWrite(LED_PIN, 0);
+	delay(200);
+
 	setup_sd();
+
+	digitalWrite(LED_PIN, 1);
+	delay(20);
+	digitalWrite(LED_PIN, 0);
+	delay(200);
 
 	if (timeStatus() != timeSet)
 		Serial.println("RTC fail"); //синхронизация не удаласть
-	else
+	else {
 		Serial.println("RTC set");
+		digitalWrite(LED_PIN, 1);
+		delay(20);
+		digitalWrite(LED_PIN, 0);
+	}
 
 	printTime(now());
 
@@ -387,6 +408,7 @@ void setup() {
 	Serial.println(F("5. Dump current file"));
 	Serial.println(F("6. Close all files"));
 
+	acquireTimer.setInterval(1, acquirePressure);
 	biasFilter.setToNewValue(analogRead(A0));
 
 }
