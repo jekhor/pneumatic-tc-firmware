@@ -22,11 +22,12 @@
 #include "EEPROMAnything.h"
 #include <DS1307RTC.h>
 #include <Time.h>
-#include <SimpleTimer.h>
+#include <TimerOne.h>
 #include <Filters.h>
 #include <SPI.h>
-#include <SD.h>
+#include <SdFat.h>
 #include <avr/pgmspace.h>
+#include <avr/sleep.h>
 
 #include "uart.h"
 #include <stdio.h>
@@ -45,6 +46,8 @@
 #define HYSTERESIS 4
 
 #define LED_PIN 4
+#define SPI_SPEED SD_SCK_MHZ(8)
+
 
 // notes in the melody:
 int16_t the_tally; //total amount of sensings.
@@ -64,7 +67,7 @@ float second_wheel= 0.0000000;
 short int time_slot;
 short int speed_slot;
 int all_speed;
-const int sd_CS = 10;
+const uint8_t sd_CS = 10;
 bool raw_measuring = 0;
 
 bool sdReady = 0;
@@ -72,16 +75,17 @@ bool sdReady = 0;
 //SdVolume volume;
 //SdFile root;
 
-File dataFile;
+SdFat sd;
+SdFile dataFile;
+
 bool dataFileOpened = 0;
 uint8_t dataFileHour;
 char logFilename[13]; /* 8.3 filename + \0 */
 
 void setup_sd() {
-	File root;
 	Serial.print(F("\nInit SD..."));
 
-	if (SD.begin(sd_CS)) {
+	if (sd.begin(sd_CS, SPI_SPEED)) {
 		Serial.println(F("SD OK"));
 		sdReady = 1;
 	} else {
@@ -174,8 +178,7 @@ int sdFileOpen()
 		dataFileHour = hour(t);
 		snprintf(logFilename, sizeof(logFilename), "%02u%02u%02u%02u.LOG", year(t) % 100, month(t), day(t), hour(t));
 
-		dataFile = SD.open(logFilename, FILE_WRITE | O_APPEND);
-		if (dataFile) {
+		if (dataFile.open(logFilename, O_CREAT | O_WRITE | O_APPEND)) {
 			dataFileOpened = 1;
 		} else {
 			Serial.println(F("Cannot open logfile"));
@@ -216,7 +219,7 @@ int logToSd(float wheel_time)
 	dataFile.print(",");
 	dataFile.print(buf);
 	dataFile.println(speed);
-	dataFile.flush();
+	dataFile.sync();
 
 	return 0;
 }
@@ -233,8 +236,7 @@ void dumpSdLog()
 		dataFileOpened = 0;
 	}
 
-	dataFile = SD.open(logFilename, FILE_READ);
-	if (!dataFile) {
+	if (!dataFile.open(logFilename, O_READ)) {
 		Serial.println(F("Failed to open file"));
 		return;
 	}
@@ -330,8 +332,6 @@ int setupRTC() {
 	return ret;
 }
 
-SimpleTimer acquireTimer;
-
 short unsigned int volatile pressure_current;
 FilterOnePole biasFilter(LOWPASS, 0.01);
 
@@ -358,6 +358,7 @@ void setupEEPROM() {
 }
 
 void setup() {
+	set_sleep_mode(SLEEP_MODE_IDLE);
 	pinMode(A0, INPUT);
 	pinMode(LED_PIN, OUTPUT);
 	analogReference(INTERNAL);
@@ -408,9 +409,12 @@ void setup() {
 	Serial.println(F("5. Dump current file"));
 	Serial.println(F("6. Close all files"));
 
-	acquireTimer.setInterval(1, acquirePressure);
 	biasFilter.setToNewValue(analogRead(A0));
+	pressure_current = analogRead(A0);
 
+	Timer1.initialize(1000);
+	Timer1.attachInterrupt(acquirePressure);
+	sleep_enable();
 }
 
 void handleMenu() {
@@ -462,7 +466,6 @@ void handleMenu() {
 				dataFile.close();
 				dataFileOpened = 0;
 			}
-			SD.end();
 			sdReady = 0;
 			Serial.println(F("Card closed"));
 		}
@@ -470,14 +473,15 @@ void handleMenu() {
 }
 
 void loop() {
-	acquireTimer.run();
-
-	short unsigned int val = pressure_current;
+	short unsigned int val;
 	static short unsigned int release_trigger_value = 0;
 	short unsigned int trigger_value; // pressure reading threshold for identifying a bike is pressing.
 
+	noInterrupts();
+	val = pressure_current;
 	// read local air pressure and create offset.
 	trigger_value = round(biasFilter.output()) + THRESHOLD;
+	interrupts();
 
 	//1 - TUBE IS PRESSURIZED INITIALLY
 	if (val >= trigger_value) {
@@ -503,7 +507,7 @@ void loop() {
 	//2 - TUBE IS STILL PRESSURIZED
 	while( pressure_current > the_max && is_measuring == 1) { //is being pressed, in all cases. to measure the max pressure.
 		the_max = pressure_current; 
-		acquireTimer.run();
+		sleep_mode();
 	}
 
 
@@ -545,6 +549,7 @@ void loop() {
 
 	handleMenu();
 
+	sleep_mode();
 }
 
 
