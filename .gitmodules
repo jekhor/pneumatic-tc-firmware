@@ -1,0 +1,6 @@
+[submodule "lib/TimerOne"]
+	path = lib/TimerOne
+	url = https://github.com/PaulStoffregen/TimerOne.git
+[submodule "lib/SdFat"]
+	path = lib/SdFat
+	url = https://github.com/greiman/SdFat.git
