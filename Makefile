@@ -30,7 +30,10 @@ USER_LIB_PATH    :=  $(PROJECT_DIR)/lib
 BOARD_TAG         = pro
 BOARD_SUB         = 16MHzatmega328
 #MCU               = atmega1280
+F_CPU             = 12000000
 
+ISP_PROG = usbtiny
+AVRDUDE_OPTS = -V
 
 ### MONITOR_BAUDRATE
 ### It must be set to Serial baudrate value you are using.
