@@ -23,13 +23,13 @@
 #include <DS1307RTC.h>
 #include <Time.h>
 #include <TimerOne.h>
-#include <Filters.h>
 #include <SPI.h>
 #include <SdFat.h>
 #include <avr/pgmspace.h>
 #include <avr/sleep.h>
 
 #include "uart.h"
+#include "LowPassFilter.h"
 #include <stdio.h>
 
 #ifdef DEBUG_MEMORY
@@ -333,7 +333,7 @@ int setupRTC() {
 }
 
 short unsigned int volatile pressure_current;
-FilterOnePole biasFilter(LOWPASS, 0.01);
+LowPassFilter biasFilter(0);
 
 void acquirePressure() {
 	short int val = analogRead(A0);
@@ -343,7 +343,7 @@ void acquirePressure() {
 	biasFilter.input(val);
 
 	if (raw_measuring)
-		printf("%u %u\n", val, (short unsigned int)round(biasFilter.output()));
+		printf("%u %u\n", val, (short unsigned int)biasFilter.output());
 }
 
 void setupEEPROM() {
@@ -409,10 +409,10 @@ void setup() {
 	Serial.println(F("5. Dump current file"));
 	Serial.println(F("6. Close all files"));
 
-	biasFilter.setToNewValue(analogRead(A0));
+	biasFilter.setOutput(analogRead(A0));
 	pressure_current = analogRead(A0);
 
-	Timer1.initialize(1000);
+	Timer1.initialize(2000);
 	Timer1.attachInterrupt(acquirePressure);
 	sleep_enable();
 }
@@ -480,7 +480,7 @@ void loop() {
 	noInterrupts();
 	val = pressure_current;
 	// read local air pressure and create offset.
-	trigger_value = round(biasFilter.output()) + THRESHOLD;
+	trigger_value = biasFilter.output() + THRESHOLD;
 	interrupts();
 
 	//1 - TUBE IS PRESSURIZED INITIALLY
