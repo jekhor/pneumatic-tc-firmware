@@ -21,7 +21,6 @@
 #include <EEPROM.h>
 #include <DS1307RTC.h>
 #include <Time.h>
-#include <TimerOne.h>
 #include <SPI.h>
 #include <SdFat.h>
 #include <avr/pgmspace.h>
@@ -41,10 +40,11 @@
 #define NOTE_E6  1319
 #define NOTE_G6  1568
 
-#define THRESHOLD 9
-#define HYSTERESIS 4
+#define THRESHOLD 25
+#define HYSTERESIS 6
 
 #define LED_PIN 4
+#define PRESSURE_SENS_EN_PIN 9
 #define SPI_SPEED SD_SCK_MHZ(8)
 
 
@@ -53,10 +53,10 @@ int16_t the_tally; //total amount of sensings.
 char incomingByte = 0;   // for incoming serial data
 uint16_t the_time_offset; // in case of power out, it starts counting time from when the power went out.
 int latest_minute;
-const int the_wheel_delay = 60; //number of milliseconds to create accurate readings for cars. prevents bounce.
+const int the_wheel_delay = 70; //number of milliseconds to create accurate readings for cars. prevents bounce.
 const int car_timeout = 1000; // 3,8 km/h minimal speed
 long the_wheel_timer; //for considering that double wheel-base of cars, not to count them twice.
-short unsigned int the_max = 0;
+short unsigned int the_max[2];
 bool is_measuring = 0;
 bool count_this = 0;
 uint8_t strike_number = 0;
@@ -162,13 +162,14 @@ int logToEEPROM(float wheel_time) {
 
 int sdFileOpen()
 {
-	if (dataFileOpened && (hour(now()) != dataFileHour)) {
+	time_t t = now();
+
+	if (dataFileOpened && (hour(t) != dataFileHour)) {
 		dataFile.close();
 		dataFileOpened = 0;
 	}
 
 	if (!dataFileOpened) {
-		time_t t = now();
 
 #ifdef DEBUG_MEMORY
 		Serial.print(F("freeMemory()="));
@@ -188,9 +189,8 @@ int sdFileOpen()
 	return 0;
 }
 
-int logToSd(float wheel_time)
+int logToSd(float wheel_time, time_t time)
 {
-	time_t time = now();
 	float speed = wheel_spacing/(wheel_time / 1000) * 3.6;
 	static char buf[21];
 
@@ -306,7 +306,7 @@ void print_memory() {
 
 void make_tone() {
 	digitalWrite(LED_PIN, 1);
-	delay(20);
+	delay(10);
 	digitalWrite(LED_PIN, 0);
 }
 
@@ -328,18 +328,29 @@ int setupRTC() {
 		}
 	}
 	setSyncProvider(RTC.get);
+	setSyncInterval(0); /* millis() are broken because of STANDBY sleeping, don't cache time */
 	return ret;
 }
 
-short unsigned int volatile pressure_current;
+short unsigned int volatile pressure_current=0;
 LowPassFilter biasFilter(0);
 
 void acquirePressure() {
-	short int val = analogRead(A0);
+	short int val;
+
+	digitalWrite(PRESSURE_SENS_EN_PIN, 1);
+	delayMicroseconds(70);
+
+	val = analogRead(A0);
+	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
+
+	if (!pressure_current)
+		biasFilter.setOutput(val);
 
 	pressure_current = val;
 
-	biasFilter.input(val);
+	if (!is_measuring)
+		biasFilter.input(val);
 
 	if (raw_measuring)
 		printf("%u %u\n", val, (short unsigned int)biasFilter.output());
@@ -356,10 +367,22 @@ void setupEEPROM() {
 
 }
 
+ISR(TIMER2_OVF_vect) {
+	acquirePressure();
+}
+
+void setupTimer2() {
+	TCCR2A = 0x00;
+	TCCR2B = _BV(CS22) | _BV(CS20); // clk/128
+	TIMSK2 |= _BV(TOIE2);
+}
+
 void setup() {
-	set_sleep_mode(SLEEP_MODE_IDLE);
 	pinMode(A0, INPUT);
 	pinMode(LED_PIN, OUTPUT);
+	pinMode(9, OUTPUT);
+	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
+	delay(10);
 	analogReference(INTERNAL);
 	analogRead(A0); // reset ADC value after change reference
 
@@ -397,6 +420,14 @@ void setup() {
 
 	printTime(now());
 
+//	digitalWrite(9, 0);
+//	delayMicroseconds(40);
+//	pressure_current = analogRead(A0);
+//	digitalWrite(9, 1);
+//	biasFilter.setOutput(pressure_current);
+//	Serial.print(F("Current pressure:"));
+//	Serial.println(pressure_current);
+
 	Serial.println("");
 	Serial.print(F("Threshold: "));
 	Serial.println(THRESHOLD);
@@ -408,12 +439,17 @@ void setup() {
 	Serial.println(F("5. Dump current file"));
 	Serial.println(F("6. Close all files"));
 
-	biasFilter.setOutput(analogRead(A0));
-	pressure_current = analogRead(A0);
-
-	Timer1.initialize(2000);
-	Timer1.attachInterrupt(acquirePressure);
+	setupTimer2();
+//	Timer1.initialize(2000);
+//	Timer1.attachInterrupt(acquirePressure);
+//	set_sleep_mode(SLEEP_MODE_IDLE);
 	sleep_enable();
+	delay(2);
+
+	PRR |= _BV(PRTIM1);
+//	PRR |= _BV(PRTIM2);
+//	PRR |= _BV(PRTWI);
+//	PRR |= _BV(PRSPI);
 }
 
 void handleMenu() {
@@ -475,6 +511,7 @@ void loop() {
 	short unsigned int val;
 	static short unsigned int release_trigger_value = 0;
 	short unsigned int trigger_value; // pressure reading threshold for identifying a bike is pressing.
+	static unsigned char sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
 	noInterrupts();
 	val = pressure_current;
@@ -485,33 +522,41 @@ void loop() {
 	//1 - TUBE IS PRESSURIZED INITIALLY
 	if (val >= trigger_value) {
 		release_trigger_value = trigger_value - HYSTERESIS;
+		sleep_mode = SLEEP_MODE_IDLE;
+		set_sleep_mode(sleep_mode);
 
 		if (strike_number == 0 && is_measuring == 0) { // FIRST HIT
-			Serial.println("");
-			Serial.println(F("Wheel 1"));
+			if (!raw_measuring) {
+				Serial.println("");
+				Serial.println(F("Wheel 1"));
+			}
 			first_wheel = millis(); 
 //			printTime(now());
 			is_measuring = 1;
+			the_max[0] = val;
 		}
 		if (strike_number == 1 && is_measuring == 1) { // SECOND HIT
-			Serial.println(F("Wheel 2"));
+			if (!raw_measuring) {
+				Serial.println(F("Wheel 2"));
+			}
 			second_wheel = millis();
 //			printTime(now());
 			is_measuring = 0;
+			the_max[1] = val;
 		}
 
 	}
 
 
 	//2 - TUBE IS STILL PRESSURIZED
-	while( pressure_current > the_max && is_measuring == 1) { //is being pressed, in all cases. to measure the max pressure.
-		the_max = pressure_current; 
+	while( val > the_max[strike_number] && is_measuring == 1) { //is being pressed, in all cases. to measure the max pressure.
+		the_max[strike_number] = val; 
 		sleep_mode();
 	}
 
 
 	//3 - TUBE IS RELEASED
-	if ( pressure_current < release_trigger_value && count_this == 0) { //released by either wheel
+	if ( val < release_trigger_value && count_this == 0) { //released by either wheel
 		if (strike_number == 0 && is_measuring == 1 && (millis() - first_wheel > the_wheel_delay)) {
 			strike_number = 1;
 		}
@@ -522,32 +567,44 @@ void loop() {
 
 
 	//4 - PRESSURE READING IS ACCEPTED AND RECORDED
-	if (((pressure_current < release_trigger_value))
+	if (((val < release_trigger_value))
 	&& ((count_this == 1 && is_measuring == 0)
 	|| ((millis() - first_wheel > car_timeout) && (is_measuring == 1)))) {
 		float wheel_time;
+		time_t time = now();
 		make_tone();
 
 		wheel_time = second_wheel - first_wheel;
 
-		printTime(now());
-		Serial.print(F("max press = "));
-		Serial.println(the_max);
+		if (!raw_measuring) {
+			printTime(time);
+			Serial.print(F("max press = "));
+			Serial.print(the_max[0]);
+			Serial.print(" ");
+			Serial.println(the_max[1]);
+			Serial.print("avg: ");
+			Serial.println(biasFilter.output());
+		}
 //		logToEEPROM(wheel_time);
 
-		logToSd(wheel_time);
+		logToSd(wheel_time, time);
 
 
 		//RESET ALL VALUES
-		the_max = 0;
 		strike_number = 0;
 		count_this = 0;
 		is_measuring = 0;
+		sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
 	}
 
 	handleMenu();
 
+	Serial.flush();
+	if (raw_measuring)
+		set_sleep_mode(SLEEP_MODE_IDLE);
+	else
+		set_sleep_mode(sleep_mode);
 	sleep_mode();
 }
 
