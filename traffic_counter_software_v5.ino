@@ -43,8 +43,11 @@
 #define THRESHOLD 25
 #define HYSTERESIS 6
 
-#define LED_PIN 4
-#define PRESSURE_SENS_EN_PIN 9
+#define LED_PIN			4
+#define PRESSURE_SENS_EN_PIN	3
+#define PWR_ON_PIN		8
+#define BT_EN_PIN		17
+#define BT_STATE_PIN		9
 #define SPI_SPEED SD_SCK_MHZ(8)
 
 
@@ -68,6 +71,7 @@ short int speed_slot;
 int all_speed;
 const uint8_t sd_CS = 10;
 bool raw_measuring = 0;
+
 
 bool sdReady = 0;
 //Sd2Card card;
@@ -378,9 +382,11 @@ void setupTimer2() {
 }
 
 void setup() {
+	pinMode(PWR_ON_PIN, OUTPUT);
+	digitalWrite(PWR_ON_PIN, 1);
 	pinMode(A0, INPUT);
 	pinMode(LED_PIN, OUTPUT);
-	pinMode(9, OUTPUT);
+	pinMode(PRESSURE_SENS_EN_PIN, OUTPUT);
 	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
 	delay(10);
 	analogReference(INTERNAL);
