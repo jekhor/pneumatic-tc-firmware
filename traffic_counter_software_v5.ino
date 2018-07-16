@@ -234,28 +234,36 @@ int setupRTC() {
 	return ret;
 }
 
-short unsigned int volatile pressure_current=0;
-LowPassFilter biasFilter(0);
+short unsigned int volatile pressure_current[2] = {0, 0};
+LowPassFilter biasFilter0(0);
+LowPassFilter biasFilter1(0);
 
 void acquirePressure() {
-	short int val;
+	short int val[2];
 
 	digitalWrite(PRESSURE_SENS_EN_PIN, 1);
 	delayMicroseconds(70);
 
-	val = analogRead(A0);
+	val[0] = analogRead(A0);
+	val[1] = analogRead(A1);
 	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
 
-	if (!pressure_current)
-		biasFilter.setOutput(val);
+	if (!pressure_current[0])
+		biasFilter0.setOutput(val[0]);
 
-	pressure_current = val;
+	if (!pressure_current[1])
+		biasFilter1.setOutput(val[1]);
 
-	if (!is_measuring)
-		biasFilter.input(val);
+	pressure_current[0] = val[0];
+	pressure_current[1] = val[1];
+
+	if (!is_measuring) {
+		biasFilter0.input(val[0]);
+		biasFilter1.input(val[1]);
+	}
 
 	if (raw_measuring)
-		printf("%u %u\n", val, (short unsigned int)biasFilter.output());
+		printf("%u %u %u %u\n", val[0], val[1], (short unsigned int)biasFilter0.output(), (short unsigned int)biasFilter1.output());
 }
 
 void setupEEPROM() {
@@ -297,7 +305,7 @@ void try_timers(void) {
 
 void idleTimeout(void) {
 	idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
-	digitalWrite(LED_PIN, 0);
+//	digitalWrite(LED_PIN, 0);
 }
 
 void setup() {
@@ -307,12 +315,14 @@ void setup() {
 	pinMode(PWR_ON_PIN, OUTPUT);
 	digitalWrite(PWR_ON_PIN, 1);
 	pinMode(A0, INPUT);
+	pinMode(A1, INPUT);
 	pinMode(LED_PIN, OUTPUT);
 	pinMode(PRESSURE_SENS_EN_PIN, OUTPUT);
 	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
 	delay(10);
 	analogReference(INTERNAL);
 	analogRead(A0); // reset ADC value after change reference
+	analogRead(A1); // reset ADC value after change reference
 
 	Serial.begin(115200);
 
@@ -373,7 +383,7 @@ void handleMenu() {
 		incomingByte = Serial.read();
 
 		idle_sleep_mode = SLEEP_MODE_IDLE;
-		digitalWrite(LED_PIN, 1);
+//		digitalWrite(LED_PIN, 1);
 		if (!raw_measuring)
 			schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
 		else
@@ -429,9 +439,9 @@ void loop() {
 	static unsigned char current_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
 	noInterrupts();
-	val = pressure_current;
+	val = pressure_current[0];
 	// read local air pressure and create offset.
-	trigger_value = biasFilter.output() + THRESHOLD;
+	trigger_value = biasFilter0.output() + THRESHOLD;
 	interrupts();
 
 	if (!is_measuring)
@@ -499,7 +509,7 @@ void loop() {
 			Serial.print(" ");
 			Serial.println(the_max[1]);
 			Serial.print("avg: ");
-			Serial.println(biasFilter.output());
+			Serial.println(biasFilter0.output());
 		}
 
 		logToSd(wheel_time, time);
