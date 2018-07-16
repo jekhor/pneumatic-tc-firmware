@@ -45,7 +45,17 @@
 #define BT_EN_PIN		17
 #define BT_STATE_PIN		9
 #define SPI_SPEED SD_SCK_MHZ(8)
+#define IDLE_TIMEOUT_MS		30000
 
+
+struct simple_timer {
+	bool active;
+	unsigned long scheduled_at;
+	unsigned long timeout;
+	void (*callback)(void);
+};
+
+typedef struct simple_timer simple_timer_t;
 
 char incomingByte = 0;   // for incoming serial data
 const int the_wheel_delay = 70; //number of milliseconds to create accurate readings for cars. prevents bounce.
@@ -59,7 +69,12 @@ float first_wheel = 0.0000000;
 float second_wheel= 0.0000000;
 const uint8_t sd_CS = 10;
 bool raw_measuring = 0;
+uint8_t idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
+#define NUM_TIMERS		1
+#define IDLE_TIMEOUT_TIMER	0
+
+simple_timer_t simple_timers[NUM_TIMERS];
 
 bool sdReady = 0;
 
@@ -257,7 +272,38 @@ void setupTimer2() {
 	TIMSK2 |= _BV(TOIE2);
 }
 
+void schedule_timer(uint8_t timer_id, unsigned long timeout) {
+	simple_timers[timer_id].scheduled_at = millis();
+	simple_timers[timer_id].timeout = timeout;
+	simple_timers[timer_id].active = true;
+}
+
+void stop_timer(uint8_t timer_id) {
+	simple_timers[timer_id].active = false;
+}
+
+void try_timers(void) {
+	int i;
+	unsigned long t = millis();
+
+	for (i = 0; i < NUM_TIMERS; i++) {
+		if (simple_timers[i].active
+		    && (t - simple_timers[i].scheduled_at >= simple_timers[i].timeout)) {
+			simple_timers[i].active = false;
+			simple_timers[i].callback();
+		}
+	}
+}
+
+void idleTimeout(void) {
+	idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
+	digitalWrite(LED_PIN, 0);
+}
+
 void setup() {
+	simple_timers[IDLE_TIMEOUT_TIMER].callback = idleTimeout;
+	simple_timers[IDLE_TIMEOUT_TIMER].active = false;
+
 	pinMode(PWR_ON_PIN, OUTPUT);
 	digitalWrite(PWR_ON_PIN, 1);
 	pinMode(A0, INPUT);
@@ -326,6 +372,13 @@ void handleMenu() {
 		// read the incoming byte:
 		incomingByte = Serial.read();
 
+		idle_sleep_mode = SLEEP_MODE_IDLE;
+		digitalWrite(LED_PIN, 1);
+		if (!raw_measuring)
+			schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
+		else
+			stop_timer(IDLE_TIMEOUT_TIMER);
+
 		if (incomingByte == '3') {
 			String s;
 			unsigned short int y;
@@ -347,8 +400,14 @@ void handleMenu() {
 
 			printTime(makeTime(tm));
 		}
-		if (incomingByte == '4')
+
+		if (incomingByte == '4') {
 			raw_measuring = !raw_measuring;
+			if (raw_measuring)
+				stop_timer(IDLE_TIMEOUT_TIMER);
+			else
+				schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
+		}
 
 		if (incomingByte == '5')
 			dumpSdLog();
@@ -367,7 +426,7 @@ void loop() {
 	short unsigned int val;
 	static short unsigned int release_trigger_value = 0;
 	short unsigned int trigger_value; // pressure reading threshold for identifying a bike is pressing.
-	static unsigned char sleep_mode = SLEEP_MODE_EXT_STANDBY;
+	static unsigned char current_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
 	noInterrupts();
 	val = pressure_current;
@@ -375,11 +434,14 @@ void loop() {
 	trigger_value = biasFilter.output() + THRESHOLD;
 	interrupts();
 
+	if (!is_measuring)
+		current_sleep_mode = idle_sleep_mode;
+
 	//1 - TUBE IS PRESSURIZED INITIALLY
 	if (val >= trigger_value) {
 		release_trigger_value = trigger_value - HYSTERESIS;
-		sleep_mode = SLEEP_MODE_IDLE;
-		set_sleep_mode(sleep_mode);
+		current_sleep_mode = SLEEP_MODE_IDLE;
+		set_sleep_mode(current_sleep_mode);
 
 		if (strike_number == 0 && is_measuring == 0) { // FIRST HIT
 			if (!raw_measuring) {
@@ -446,17 +508,17 @@ void loop() {
 		strike_number = 0;
 		count_this = 0;
 		is_measuring = 0;
-		sleep_mode = SLEEP_MODE_EXT_STANDBY;
+		current_sleep_mode = idle_sleep_mode;
 
 	}
 
 	handleMenu();
 
+	try_timers();
+
 	Serial.flush();
-	if (raw_measuring)
-		set_sleep_mode(SLEEP_MODE_IDLE);
-	else
-		set_sleep_mode(sleep_mode);
+
+	set_sleep_mode(current_sleep_mode);
 	sleep_mode();
 }
 
