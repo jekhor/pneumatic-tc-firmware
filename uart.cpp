@@ -3,7 +3,7 @@
 
 #include <HardwareSerial.h>
 
-#define FULL_TERM_SUPPORT
+//#define FULL_TERM_SUPPORT
 
 FILE uartstream;
 
