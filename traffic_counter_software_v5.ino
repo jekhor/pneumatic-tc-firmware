@@ -34,6 +34,8 @@
 #include <MemoryFree.h>
 #endif
 
+#define ARRAY_SIZE(_a)	(sizeof(_a) / sizeof((_a)[0]))
+
 #define LOCAL_TIME_OFFSET (3 * SECS_PER_HOUR)
 
 #define THRESHOLD 25
@@ -44,8 +46,9 @@
 #define PWR_ON_PIN		8
 #define BT_EN_PIN		17
 #define BT_STATE_PIN		9
+#define BT_START_PIN		2
 #define SPI_SPEED SD_SCK_MHZ(8)
-#define IDLE_TIMEOUT_MS		30000
+#define IDLE_TIMEOUT_MS		60000
 
 
 struct simple_timer {
@@ -69,6 +72,7 @@ float first_wheel = 0.0000000;
 float second_wheel= 0.0000000;
 const uint8_t sd_CS = 10;
 bool raw_measuring = 0;
+volatile bool bt_enabled = 0;
 uint8_t idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
 #define NUM_TIMERS		1
@@ -84,6 +88,29 @@ SdFile dataFile;
 bool dataFileOpened = 0;
 uint8_t dataFileHour;
 char logFilename[13]; /* 8.3 filename + \0 */
+
+void schedule_timer(uint8_t timer_id, unsigned long timeout) {
+	simple_timers[timer_id].scheduled_at = millis();
+	simple_timers[timer_id].timeout = timeout;
+	simple_timers[timer_id].active = true;
+}
+
+void stop_timer(uint8_t timer_id) {
+	simple_timers[timer_id].active = false;
+}
+
+void try_timers(void) {
+	int i;
+	unsigned long t = millis();
+
+	for (i = 0; i < NUM_TIMERS; i++) {
+		if (simple_timers[i].active
+		    && (t - simple_timers[i].scheduled_at >= simple_timers[i].timeout)) {
+			simple_timers[i].active = false;
+			simple_timers[i].callback();
+		}
+	}
+}
 
 void setup_sd() {
 	Serial.print(F("\nInit SD..."));
@@ -270,6 +297,19 @@ void setupEEPROM() {
 
 }
 
+void btstart_isr() {
+	bt_enabled = 1;
+	digitalWrite(BT_EN_PIN, HIGH);
+	digitalWrite(LED_PIN, 1);
+
+	idle_sleep_mode = SLEEP_MODE_IDLE;
+	//		digitalWrite(LED_PIN, 1);
+	if (!raw_measuring)
+		schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
+	else
+		stop_timer(IDLE_TIMEOUT_TIMER);
+}
+
 ISR(TIMER2_OVF_vect) {
 	acquirePressure();
 }
@@ -280,30 +320,11 @@ void setupTimer2() {
 	TIMSK2 |= _BV(TOIE2);
 }
 
-void schedule_timer(uint8_t timer_id, unsigned long timeout) {
-	simple_timers[timer_id].scheduled_at = millis();
-	simple_timers[timer_id].timeout = timeout;
-	simple_timers[timer_id].active = true;
-}
-
-void stop_timer(uint8_t timer_id) {
-	simple_timers[timer_id].active = false;
-}
-
-void try_timers(void) {
-	int i;
-	unsigned long t = millis();
-
-	for (i = 0; i < NUM_TIMERS; i++) {
-		if (simple_timers[i].active
-		    && (t - simple_timers[i].scheduled_at >= simple_timers[i].timeout)) {
-			simple_timers[i].active = false;
-			simple_timers[i].callback();
-		}
-	}
-}
-
 void idleTimeout(void) {
+	bt_enabled = 0;
+	digitalWrite(BT_EN_PIN, LOW);
+	digitalWrite(LED_PIN, LOW);
+
 	idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 //	digitalWrite(LED_PIN, 0);
 }
@@ -317,6 +338,10 @@ void setup() {
 	pinMode(A0, INPUT);
 	pinMode(A1, INPUT);
 	pinMode(LED_PIN, OUTPUT);
+	pinMode(BT_START_PIN, INPUT_PULLUP);
+	pinMode(BT_EN_PIN, OUTPUT);
+	digitalWrite(BT_EN_PIN, 0);
+	attachInterrupt(digitalPinToInterrupt(BT_START_PIN), btstart_isr, FALLING);
 	pinMode(PRESSURE_SENS_EN_PIN, OUTPUT);
 	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
 	delay(10);
@@ -377,10 +402,140 @@ void setup() {
 //	PRR |= _BV(PRSPI);
 }
 
-void handleMenu() {
-	if (Serial.available() > 0) {
-		// read the incoming byte:
-		incomingByte = Serial.read();
+
+char cmd_time(char argc, char *argv[]) {
+
+
+	String s;
+	unsigned short int y;
+	tmElements_t tm;
+
+	if ((argc == 1) || (argc > 2)) {
+		Serial.println(F("Usage: time YYYY-MM-DD HH:MM:SS"));
+		return 1;
+	}
+
+	if (argc == 2) {
+		sscanf_P(argv[0], PSTR("%04hu-%02hhu-%02hhu"), &y, &tm.Month, &tm.Day);
+		sscanf_P(argv[1], PSTR("%02hhu:%02hhu:%02hhu"), &tm.Hour, &tm.Minute, &tm.Second);
+
+		tm.Year = y - 1970;
+		if (!RTC.write(tm))
+			Serial.println(F("RTC error"));
+
+		setTime(makeTime(tm));
+		if (!RTC.read(tm))
+			Serial.println(F("RTC error"));
+
+	}
+	printTime(now());
+
+	return 0;
+}
+
+char cmd_ls(char argc, char *argv[]) {
+	sd.ls(LS_R);
+
+	return 0;
+}
+
+char cmd_dump(char argc, char *argv[]) {
+	dumpSdLog();
+
+	return 0;
+}
+
+char cmd_raw(char argc, char *argv[]) {
+	raw_measuring = !raw_measuring;
+
+	if (raw_measuring) {
+		if (raw_measuring)
+			stop_timer(IDLE_TIMEOUT_TIMER);
+		else
+			schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
+	}
+
+	return 0;
+}
+
+char cmd_poff(char argc, char *argv[]) {
+	digitalWrite(LED_PIN, 1);
+	digitalWrite(PWR_ON_PIN, 0);
+	return 0;
+}
+
+typedef char (*cmd_handler_t)(char argc, char *argv[]);
+
+struct cmd_table_entry {
+	PGM_P cmd;
+	cmd_handler_t handler;
+};
+
+const char cmd_time_name[] PROGMEM = "time";
+const char cmd_ls_name[] PROGMEM = "ls";
+const char cmd_dump_name[] PROGMEM = "dump";
+const char cmd_raw_name[] PROGMEM = "raw";
+const char cmd_poff_name[] PROGMEM = "poff";
+
+const struct cmd_table_entry cmd_table[] = {
+	{
+		cmd_time_name,
+		cmd_time,
+	},
+	{
+		cmd_ls_name,
+		cmd_ls,
+	},
+	{
+		cmd_dump_name,
+		cmd_dump,
+	},
+	{
+		cmd_raw_name,
+		cmd_raw,
+	},
+	{
+		cmd_poff_name,
+		cmd_poff,
+	},
+};
+
+#define MAX_CMD_ARGS	3
+
+void parse_cmdline(char *buf, uint8_t len) {
+	char *cmd = strtok(buf, " ");
+	char *argv[MAX_CMD_ARGS];
+	uint8_t argc = 0;
+	unsigned char i;
+
+	if (!cmd)
+		return;
+
+	while (argc < MAX_CMD_ARGS) {
+		argv[argc] = strtok(NULL, " ");
+		if (argv[argc])
+			argc++;
+		else
+			break;
+	}
+
+	for (i = 0; i < ARRAY_SIZE(cmd_table); i++) {
+		if (!strcmp_P(cmd, cmd_table[i].cmd)) {
+			cmd_table[i].handler(argc, argv);
+			break;
+		}
+	}
+}
+
+#define SERIAL_BUF_LEN	80
+
+static char serial_buf[SERIAL_BUF_LEN];
+static uint8_t serial_buf_level = 0;
+
+void processSerial() {
+	char c;
+
+	while (Serial.available()) {
 
 		idle_sleep_mode = SLEEP_MODE_IDLE;
 //		digitalWrite(LED_PIN, 1);
@@ -389,47 +544,29 @@ void handleMenu() {
 		else
 			stop_timer(IDLE_TIMEOUT_TIMER);
 
-		if (incomingByte == '3') {
-			String s;
-			unsigned short int y;
-			tmElements_t tm;
-			while (Serial.available() > 0)
-				Serial.read();
+		c = Serial.read();
+		Serial.write(c);
 
-			Serial.println(F("Enter datetime as YYYY-MM-DD HH:MM:SS"));
-			scanf_P(PSTR("%04hu-%02hhu-%02hhu %02hhu:%02hhu:%02hhu"), &y, &tm.Month, &tm.Day, &tm.Hour, &tm.Minute, &tm.Second);
+		digitalWrite(LED_PIN, 1);
+		if ((c == '\r') || (c == '\n')) {
+			if (c == '\r')
+				Serial.write('\n');
 
-			tm.Year = y - 1970;
-			if (!RTC.write(tm))
-				Serial.println(F("RTC error"));
+			serial_buf[serial_buf_level] = '\0';
+			serial_buf_level++;
 
-			setTime(makeTime(tm));
-			printTime(now());
-			if (!RTC.read(tm))
-				Serial.println(F("RTC error"));
+			parse_cmdline(serial_buf, serial_buf_level);
 
-			printTime(makeTime(tm));
-		}
-
-		if (incomingByte == '4') {
-			raw_measuring = !raw_measuring;
-			if (raw_measuring)
-				stop_timer(IDLE_TIMEOUT_TIMER);
-			else
-				schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
-		}
-
-		if (incomingByte == '5')
-			dumpSdLog();
-		if (incomingByte == '6') {
-			if (dataFileOpened) {
-				dataFile.close();
-				dataFileOpened = 0;
+			serial_buf_level = 0;
+			Serial.write("> ");
+		} else {
+			if (serial_buf_level < SERIAL_BUF_LEN - 1) {
+				serial_buf[serial_buf_level] = c;
+				serial_buf_level++;
 			}
-			sdReady = 0;
-			Serial.println(F("Card closed"));
 		}
 	}
+		digitalWrite(LED_PIN, 0);
 }
 
 void loop() {
@@ -522,7 +659,7 @@ void loop() {
 
 	}
 
-	handleMenu();
+	processSerial();
 
 	try_timers();
 
