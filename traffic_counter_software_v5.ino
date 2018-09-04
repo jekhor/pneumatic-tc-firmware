@@ -268,12 +268,12 @@ LowPassFilter biasFilter1(0);
 void acquirePressure() {
 	short int val[2];
 
-	digitalWrite(PRESSURE_SENS_EN_PIN, 1);
+	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
 	delayMicroseconds(70);
 
 	val[0] = analogRead(A0);
 	val[1] = analogRead(A1);
-	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
+	digitalWrite(PRESSURE_SENS_EN_PIN, 1);
 
 	if (!pressure_current[0])
 		biasFilter0.setOutput(val[0]);
@@ -343,7 +343,7 @@ void setup() {
 	digitalWrite(BT_EN_PIN, 0);
 	attachInterrupt(digitalPinToInterrupt(BT_START_PIN), btstart_isr, FALLING);
 	pinMode(PRESSURE_SENS_EN_PIN, OUTPUT);
-	digitalWrite(PRESSURE_SENS_EN_PIN, 0);
+	digitalWrite(PRESSURE_SENS_EN_PIN, 1);
 	delay(10);
 	analogReference(INTERNAL);
 	analogRead(A0); // reset ADC value after change reference

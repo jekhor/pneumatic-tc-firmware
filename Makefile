@@ -28,9 +28,9 @@ USER_LIB_PATH    :=  $(PROJECT_DIR)/lib
 #BOARD_TAG         = mega
 #BOARD_SUB         = atmega1280
 BOARD_TAG         = pro
-BOARD_SUB         = 16MHzatmega328
+BOARD_SUB         = 8MHzatmega328
 #MCU               = atmega1280
-F_CPU             = 12000000
+F_CPU             = 8000000
 
 ISP_PROG = usbtiny
 AVRDUDE_OPTS = -V
