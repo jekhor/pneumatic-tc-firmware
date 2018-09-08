@@ -49,6 +49,7 @@
 #define BT_START_PIN		2
 #define SPI_SPEED SD_SCK_MHZ(8)
 #define IDLE_TIMEOUT_MS		60000
+#define BATT_MEASURE_PIN	A6
 
 
 struct simple_timer {
@@ -112,6 +113,18 @@ void try_timers(void) {
 	}
 }
 
+unsigned short readBattery_mV() {
+	unsigned short adc = analogRead(BATT_MEASURE_PIN);
+	double v;
+
+	return adc * 44 / 10;
+//	v = adc * 1.1 / 1024;
+//	v *= (820.0 / 200); 
+
+//	return v;
+}
+
+
 void setup_sd() {
 	Serial.print(F("\nInit SD..."));
 
@@ -120,6 +133,7 @@ void setup_sd() {
 		sdReady = 1;
 	} else {
 		Serial.println(F("SD init failed"));
+		sd.initErrorPrint();
 		return;
 	}
 
@@ -145,7 +159,9 @@ int sdFileOpen()
 		Serial.println(freeMemory());
 #endif
 		dataFileHour = hour(t);
-		snprintf(logFilename, sizeof(logFilename), "%02u%02u%02u%02u.LOG", year(t) % 100, month(t), day(t), hour(t));
+		snprintf_P(logFilename, sizeof(logFilename), PSTR("%02u%02u%02u%02u.LOG"), year(t) % 100, month(t), day(t), hour(t));
+
+		Serial.println(logFilename);
 
 		if (dataFile.open(logFilename, O_CREAT | O_WRITE | O_APPEND)) {
 			dataFileOpened = 1;
@@ -186,16 +202,18 @@ int logToSd(float wheel_time, time_t time)
 	dataFile.print(time - LOCAL_TIME_OFFSET); /* UTC Unix timestamp */
 	dataFile.print(",");
 	dataFile.print(buf);
-	dataFile.println(speed);
+	dataFile.print(speed);
+	dataFile.print(",");
+	dataFile.println(readBattery_mV());
 	dataFile.sync();
 
 	return 0;
 }
 
-void dumpSdLog()
+char dumpSdLog(char *file)
 {
 	if (!sdReady)
-		return;
+		return 1;
 
 	sdFileOpen();
 
@@ -204,9 +222,9 @@ void dumpSdLog()
 		dataFileOpened = 0;
 	}
 
-	if (!dataFile.open(logFilename, O_READ)) {
+	if (!dataFile.open(file, O_READ)) {
 		Serial.println(F("Failed to open file"));
-		return;
+		return 1;
 	}
 
 	while (dataFile.available())
@@ -214,6 +232,8 @@ void dumpSdLog()
 
 	Serial.println("");
 	dataFile.close();
+
+	return 0;
 }
 
 void printTime(time_t time)
@@ -289,8 +309,16 @@ void acquirePressure() {
 		biasFilter1.input(val[1]);
 	}
 
-	if (raw_measuring)
-		printf("%u %u %u %u\n", val[0], val[1], (short unsigned int)biasFilter0.output(), (short unsigned int)biasFilter1.output());
+	if (raw_measuring) {
+		Serial.print(val[0]);
+		Serial.print(' ');
+		Serial.print(val[1]);
+		Serial.print(' ');
+		Serial.print((short unsigned int)biasFilter0.output());
+		Serial.print(' ');
+		Serial.println((short unsigned int)biasFilter1.output());
+//		printf_P(PSTR("%u %u %u %u\n"), val[0], val[1], (short unsigned int)biasFilter0.output(), (short unsigned int)biasFilter1.output());
+	}
 }
 
 void setupEEPROM() {
@@ -310,14 +338,18 @@ void btstart_isr() {
 		stop_timer(IDLE_TIMEOUT_TIMER);
 }
 
-ISR(TIMER2_OVF_vect) {
+ISR(TIMER2_COMPA_vect) {
+//ISR(TIMER2_OVF_vect) {
 	acquirePressure();
 }
 
 void setupTimer2() {
-	TCCR2A = 0x00;
-	TCCR2B = _BV(CS22) | _BV(CS20); // clk/128
-	TIMSK2 |= _BV(TOIE2);
+	TCCR2A = _BV(WGM21); // reset counter on compare match
+	TCCR2B = _BV(CS22) | _BV(CS20); // clk/128 = 62500 Hz
+//	OCR2A = 208;
+	OCR2A = 255;
+	TIMSK2 |= _BV(OCIE2A); // ~299 Hz
+//	TIMSK2 |= _BV(TOIE2); // ~299 Hz
 }
 
 void idleTimeout(void) {
@@ -329,6 +361,17 @@ void idleTimeout(void) {
 //	digitalWrite(LED_PIN, 0);
 }
 
+void print_help(void) {
+	puts_P(PSTR(
+	"Commands:\n"
+	" time [yyyy-mm-dd HH:MM:SS] \t - get/set time\n"
+	" raw\t\t\\tt - toggle raw dump\n"
+	" ls\t\t\t\t - list files on SD\n"
+	" dump [file]\t\t\t - dump file content\n"
+	" batt\t\t\t\t - show battery voltage\n"
+	));
+}
+
 void setup() {
 	simple_timers[IDLE_TIMEOUT_TIMER].callback = idleTimeout;
 	simple_timers[IDLE_TIMEOUT_TIMER].active = false;
@@ -337,6 +380,7 @@ void setup() {
 	digitalWrite(PWR_ON_PIN, 1);
 	pinMode(A0, INPUT);
 	pinMode(A1, INPUT);
+	pinMode(BATT_MEASURE_PIN, INPUT);
 	pinMode(LED_PIN, OUTPUT);
 	pinMode(BT_START_PIN, INPUT_PULLUP);
 	pinMode(BT_EN_PIN, OUTPUT);
@@ -357,6 +401,7 @@ void setup() {
 	delay(200);
 
 	setup_uart();
+	Serial.println(F("Build: " __DATE__ " " __TIME__));
 	setupEEPROM();
 	setupRTC();
 
@@ -387,10 +432,7 @@ void setup() {
 	Serial.print(F("Threshold: "));
 	Serial.println(THRESHOLD);
 	Serial.println("");
-	Serial.println(F("3. Set Time"));
-	Serial.println(F("4. Run/stop measurement"));
-	Serial.println(F("5. Dump current file"));
-	Serial.println(F("6. Close all files"));
+	print_help();
 
 	setupTimer2();
 	sleep_enable();
@@ -434,13 +476,19 @@ char cmd_time(char argc, char *argv[]) {
 }
 
 char cmd_ls(char argc, char *argv[]) {
+	if (!sdReady)
+		return 1;
+
 	sd.ls(LS_R);
 
 	return 0;
 }
 
 char cmd_dump(char argc, char *argv[]) {
-	dumpSdLog();
+	if (argc == 1)
+		return dumpSdLog(argv[0]);
+	else
+		return dumpSdLog(logFilename);
 
 	return 0;
 }
@@ -454,6 +502,12 @@ char cmd_raw(char argc, char *argv[]) {
 		else
 			schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
 	}
+
+	return 0;
+}
+
+char cmd_batt(char argc, char *argv[]) {
+	Serial.println(readBattery_mV());
 
 	return 0;
 }
@@ -476,6 +530,7 @@ const char cmd_ls_name[] PROGMEM = "ls";
 const char cmd_dump_name[] PROGMEM = "dump";
 const char cmd_raw_name[] PROGMEM = "raw";
 const char cmd_poff_name[] PROGMEM = "poff";
+const char cmd_batt_name[] PROGMEM = "batt";
 
 const struct cmd_table_entry cmd_table[] = {
 	{
@@ -498,6 +553,10 @@ const struct cmd_table_entry cmd_table[] = {
 		cmd_poff_name,
 		cmd_poff,
 	},
+	{
+		cmd_batt_name,
+		cmd_batt,
+	},
 };
 
 #define MAX_CMD_ARGS	3
@@ -507,6 +566,7 @@ void parse_cmdline(char *buf, uint8_t len) {
 	char *argv[MAX_CMD_ARGS];
 	uint8_t argc = 0;
 	unsigned char i;
+	char ret = 1;
 
 	if (!cmd)
 		return;
@@ -521,10 +581,14 @@ void parse_cmdline(char *buf, uint8_t len) {
 
 	for (i = 0; i < ARRAY_SIZE(cmd_table); i++) {
 		if (!strcmp_P(cmd, cmd_table[i].cmd)) {
-			cmd_table[i].handler(argc, argv);
+			ret = cmd_table[i].handler(argc, argv);
 			break;
 		}
 	}
+
+	if (ret)
+		Serial.println("ERROR");
+
 }
 
 #define SERIAL_BUF_LEN	80
