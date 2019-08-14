@@ -1,12 +1,10 @@
 # Pneumatic traffic counter firmware
 
-Firmware for (bicycle) traffic counting with pneumatic tube sensor.
+Firmware for (bicycle) traffic counter with pneumatic tube sensors.
 
 Hardware: https://github.com/jekhor/pneumatic-tc-hardware
 
-# Licensing
-
-Initially based on Tomorrow Lab's work:
+Initially inspired by Tomorrow Lab's work:
 
 ```
 /***************************************************************
@@ -24,7 +22,10 @@ Initially based on Tomorrow Lab's work:
  *
  ***************************************************************/
 ```
-License: CC-BY-SA
 
-Copyright 2017-2018 Yauhen Kharuzhy \<jekhor@gmail.com\>, 2012 Ted Ullricis\_measuringh \<ted@tomorrow-lab.com\>
+# Licensing
+
+License: GPLv3 or later
+
+Copyright 2017-2019 Yauhen Kharuzhy \<jekhor@gmail.com\>
 
