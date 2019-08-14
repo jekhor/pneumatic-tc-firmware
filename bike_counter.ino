@@ -1,19 +1,11 @@
-
-
-/***************************************************************
- * 
- * Do-It-Yourself TRAFFIC COUNTER
- * Developed by Tomorrow Lab in NYC 2012
- * Developer: Ted Ullricis_measuringh <ted@tomorrow-lab.com>
- * http://tomorrow-lab.com
- * 
- * Materials List:
- * http://bit.ly/OqVIgj
- * 
- * This work is licensed under a Creative Commons Attribution-ShareAlike 3.0 Unported License.
- * Please include credit to Tomorrow Lab in all future versions.
- * 
- ***************************************************************/
+/* SPDX-License-Identifier: GPL-3.0-or-later */
+/*
+ * Pneumatic bicycles counter
+ * Copyrignt (c) 2019 Yauhen Kharuzhy <jekhor@gmail.com>
+ *
+ * Inspired by Tomorrow Lab work, http://tomorrow-lab.com, http://bit.ly/OqVIgj
+ * (Ted Ullricis_measuringh <ted@tomorrow-lab.com>)
+ */
 
 //#define DEBUG_MEMORY
 
@@ -21,246 +13,73 @@
 #include <EEPROM.h>
 #include <DS1307RTC.h>
 #include <Time.h>
-#include <SPI.h>
-#include <SdFat.h>
 #include <avr/pgmspace.h>
 #include <avr/sleep.h>
 
 #include "uart.h"
 #include "LowPassFilter.h"
+#include "sd_log.h"
+#include "commands.h"
+#include "timers.h"
+
+#include "common.h"
+
 #include <stdio.h>
 
 #ifdef DEBUG_MEMORY
 #include <MemoryFree.h>
 #endif
 
-#define ARRAY_SIZE(_a)	(sizeof(_a) / sizeof((_a)[0]))
-
-#define LOCAL_TIME_OFFSET (3 * SECS_PER_HOUR)
-
-#define THRESHOLD 25
-#define HYSTERESIS 6
-
-#define LED_PIN			4
-#define PRESSURE_SENS_EN_PIN	3
-#define PWR_ON_PIN		8
-#define BT_EN_PIN		17
-#define BT_STATE_PIN		9
-#define BT_START_PIN		2
-#define SPI_SPEED SD_SCK_MHZ(8)
-#define IDLE_TIMEOUT_MS		60000
-#define BATT_MEASURE_PIN	A6
-
-
-struct simple_timer {
-	bool active;
-	unsigned long scheduled_at;
-	unsigned long timeout;
-	void (*callback)(void);
+enum led_state_t {
+	LED_OFF,
+	LED_ON,
 };
 
-typedef struct simple_timer simple_timer_t;
+static const int debounce_time_ms = 8;
+static const int measurement_timeout = 1000; // 3,8 km/h minimal speed
 
-char incomingByte = 0;   // for incoming serial data
-const int the_wheel_delay = 70; //number of milliseconds to create accurate readings for cars. prevents bounce.
-const int car_timeout = 1000; // 3,8 km/h minimal speed
-short unsigned int the_max[2];
 bool is_measuring = 0;
-bool count_this = 0;
-uint8_t strike_number = 0;
-const float wheel_spacing = 1.06; //average spacing between wheels of car (METERS)
-float first_wheel = 0.0000000;
-float second_wheel= 0.0000000;
-const uint8_t sd_CS = 10;
-bool raw_measuring = 0;
 volatile bool bt_enabled = 0;
+enum bt_mode bluetooth_mode = BT_AUTO;
 uint8_t idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
-#define NUM_TIMERS		1
-#define IDLE_TIMEOUT_TIMER	0
+static enum led_state_t led_state = LED_OFF;
+static uint8_t led_flash_remains = 0;
 
-simple_timer_t simple_timers[NUM_TIMERS];
-
-bool sdReady = 0;
-
-SdFat sd;
-SdFile dataFile;
-
-bool dataFileOpened = 0;
-uint8_t dataFileHour;
-char logFilename[13]; /* 8.3 filename + \0 */
-
-void schedule_timer(uint8_t timer_id, unsigned long timeout) {
-	simple_timers[timer_id].scheduled_at = millis();
-	simple_timers[timer_id].timeout = timeout;
-	simple_timers[timer_id].active = true;
-}
-
-void stop_timer(uint8_t timer_id) {
-	simple_timers[timer_id].active = false;
-}
-
-void try_timers(void) {
-	int i;
-	unsigned long t = millis();
-
-	for (i = 0; i < NUM_TIMERS; i++) {
-		if (simple_timers[i].active
-		    && (t - simple_timers[i].scheduled_at >= simple_timers[i].timeout)) {
-			simple_timers[i].active = false;
-			simple_timers[i].callback();
-		}
-	}
-}
-
-unsigned short readBattery_mV() {
-	unsigned short adc = analogRead(BATT_MEASURE_PIN);
-	double v;
-
-	return adc * 44 / 10;
-//	v = adc * 1.1 / 1024;
-//	v *= (820.0 / 200); 
-
-//	return v;
-}
-
-
-void setup_sd() {
-	Serial.print(F("\nInit SD..."));
-
-	if (sd.begin(sd_CS, SPI_SPEED)) {
-		Serial.println(F("SD OK"));
-		sdReady = 1;
-	} else {
-		Serial.println(F("SD init failed"));
-		sd.initErrorPrint();
-		return;
-	}
-
-#ifdef DEBUG_MEMORY
-	Serial.print(F("freeMemory()="));
-	Serial.println(freeMemory());
-#endif
-}
-
-int sdFileOpen()
+static void led_timer_cb()
 {
-	time_t t = now();
-
-	if (dataFileOpened && (hour(t) != dataFileHour)) {
-		dataFile.close();
-		dataFileOpened = 0;
+	switch (led_state) {
+	case LED_OFF:
+		digitalWrite(LED_PIN, 1);
+		led_state = LED_ON;
+		schedule_timer(LED_TIMER, LED_FLASH_ON_MS);
+		break;
+	case LED_ON:
+		digitalWrite(LED_PIN, 0);
+		led_state = LED_OFF;
+		led_flash_remains--;
+		if (led_flash_remains)
+			schedule_timer(LED_TIMER, LED_FLASH_OFF_MS);
+		break;
 	}
-
-	if (!dataFileOpened) {
-
-#ifdef DEBUG_MEMORY
-		Serial.print(F("freeMemory()="));
-		Serial.println(freeMemory());
-#endif
-		dataFileHour = hour(t);
-		snprintf_P(logFilename, sizeof(logFilename), PSTR("%02u%02u%02u%02u.LOG"), year(t) % 100, month(t), day(t), hour(t));
-
-		Serial.println(logFilename);
-
-		if (dataFile.open(logFilename, O_CREAT | O_WRITE | O_APPEND)) {
-			dataFileOpened = 1;
-		} else {
-			Serial.println(F("Cannot open logfile"));
-			return 1;
-		}
-	}
-
-	return 0;
 }
 
-int logToSd(float wheel_time, time_t time)
+static void flash_led(uint8_t count)
 {
-	float speed = wheel_spacing/(wheel_time / 1000) * 3.6;
-	static char buf[21];
+	led_flash_remains += count;
 
-	if (speed < 0)
-		speed = 0;
-
-	Serial.print("Speed km/h ");
-	Serial.println(speed);
-
-	if (!sdReady) {
-		return 1;
-	}
-
-	if (sdFileOpen())
-		return 1;
-
-#ifdef DEBUG_MEMORY
-		Serial.print(F("freeMemory()="));
-		Serial.println(freeMemory());
-#endif
-
-	snprintf_P(buf, sizeof(buf), PSTR("%04d-%02d-%02d %02d:%02d:%02d,"), year(time), month(time), day(time), hour(time), minute(time), second(time));
-
-	dataFile.print(time - LOCAL_TIME_OFFSET); /* UTC Unix timestamp */
-	dataFile.print(",");
-	dataFile.print(buf);
-	dataFile.print(speed);
-	dataFile.print(",");
-	dataFile.println(readBattery_mV());
-	dataFile.sync();
-
-	return 0;
+	if (!simple_timers[LED_TIMER].active)
+		schedule_timer(LED_TIMER, 0);
 }
 
-char dumpSdLog(char *file)
+void setup_led()
 {
-	if (!sdReady)
-		return 1;
-
-	sdFileOpen();
-
-	if (dataFileOpened) {
-		dataFile.close();
-		dataFileOpened = 0;
-	}
-
-	if (!dataFile.open(file, O_READ)) {
-		Serial.println(F("Failed to open file"));
-		return 1;
-	}
-
-	while (dataFile.available())
-		Serial.write(dataFile.read());
-
-	Serial.println("");
-	dataFile.close();
-
-	return 0;
+	simple_timers[LED_TIMER].callback = led_timer_cb;
+	simple_timers[LED_TIMER].active = false;
 }
 
-void printTime(time_t time)
-{
-/*	Serial.print(year(time));
-	Serial.print("-");
-	Serial.print(month(time));
-	Serial.print("-");
-	Serial.print(day(time));
-	Serial.print(" ");
-	Serial.print(hour(time));
-	Serial.print(":");
-	Serial.print(minute(time));
-	Serial.print(":");
-	Serial.println(second(time));
-	*/
-	printf_P(PSTR("%04d-%02d-%02d %02d:%02d:%02d\n"), year(time), month(time), day(time), hour(time), minute(time), second(time));
-}
-
-void make_tone() {
-	digitalWrite(LED_PIN, 1);
-	delay(10);
-	digitalWrite(LED_PIN, 0);
-}
-
-int setupRTC() {
-	int ret = 0;
+int8_t setupRTC() {
+	int8_t ret = 0;
 
 	if (!RTC.get()) {
 		TimeElements tm;
@@ -277,13 +96,19 @@ int setupRTC() {
 		}
 	}
 	setSyncProvider(RTC.get);
-	setSyncInterval(0); /* millis() are broken because of STANDBY sleeping, don't cache time */
+	/* millis() is broken because of STANDBY sleeping, don't cache time */
+	setSyncInterval(0);
 	return ret;
 }
 
 short unsigned int volatile pressure_current[2] = {0, 0};
 LowPassFilter biasFilter0(0);
 LowPassFilter biasFilter1(0);
+
+LowPassFilter *biasFilters[NUM_CHANNELS] = {
+	&biasFilter0,
+	&biasFilter1,
+};
 
 void acquirePressure() {
 	short int val[2];
@@ -328,14 +153,10 @@ void setupEEPROM() {
 void btstart_isr() {
 	bt_enabled = 1;
 	digitalWrite(BT_EN_PIN, HIGH);
-	digitalWrite(LED_PIN, 1);
+	digitalWrite(LED_PIN, HIGH);
 
 	idle_sleep_mode = SLEEP_MODE_IDLE;
-	//		digitalWrite(LED_PIN, 1);
-	if (!raw_measuring)
-		schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
-	else
-		stop_timer(IDLE_TIMEOUT_TIMER);
+	schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
 }
 
 ISR(TIMER2_COMPA_vect) {
@@ -353,29 +174,22 @@ void setupTimer2() {
 }
 
 void idleTimeout(void) {
-	bt_enabled = 0;
-	digitalWrite(BT_EN_PIN, LOW);
-	digitalWrite(LED_PIN, LOW);
+	if ((bt_enabled
+		&& ((digitalRead(BT_STATE_PIN))
+			|| (bluetooth_mode == BT_PERMANENT)))
+		|| raw_measuring) {
+		schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
+	} else {
+		bt_enabled = 0;
+		digitalWrite(BT_EN_PIN, LOW);
+		digitalWrite(LED_PIN, LOW);
 
-	idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
-//	digitalWrite(LED_PIN, 0);
+		idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
+	}
 }
 
-void print_help(void) {
-	puts_P(PSTR(
-	"Commands:\n"
-	" time [yyyy-mm-dd HH:MM:SS] \t - get/set time\n"
-	" raw\t\t\\tt - toggle raw dump\n"
-	" ls\t\t\t\t - list files on SD\n"
-	" dump [file]\t\t\t - dump file content\n"
-	" batt\t\t\t\t - show battery voltage\n"
-	));
-}
-
-void setup() {
-	simple_timers[IDLE_TIMEOUT_TIMER].callback = idleTimeout;
-	simple_timers[IDLE_TIMEOUT_TIMER].active = false;
-
+void setupPins()
+{
 	pinMode(PWR_ON_PIN, OUTPUT);
 	digitalWrite(PWR_ON_PIN, 1);
 	pinMode(A0, INPUT);
@@ -386,14 +200,33 @@ void setup() {
 	pinMode(BT_EN_PIN, OUTPUT);
 	digitalWrite(BT_EN_PIN, 0);
 	attachInterrupt(digitalPinToInterrupt(BT_START_PIN), btstart_isr, FALLING);
+	pinMode(BT_STATE_PIN, INPUT);
 	pinMode(PRESSURE_SENS_EN_PIN, OUTPUT);
 	digitalWrite(PRESSURE_SENS_EN_PIN, 1);
+}
+
+void reset_channels_state();
+
+void setup() {
+	simple_timers[IDLE_TIMEOUT_TIMER].callback = idleTimeout;
+	simple_timers[IDLE_TIMEOUT_TIMER].active = false;
+
+
+	setupPins();
+
+	setup_led();
+
 	delay(10);
 	analogReference(INTERNAL);
 	analogRead(A0); // reset ADC value after change reference
 	analogRead(A1); // reset ADC value after change reference
 
-	Serial.begin(115200);
+	Serial.begin(57600);
+
+	Serial.print("UBRR0L: ");
+	Serial.println(UBRR0L);
+	Serial.print("UCSR0A: ");
+	Serial.println(UCSR0A);
 
 	digitalWrite(LED_PIN, 1);
 	delay(20);
@@ -418,7 +251,7 @@ void setup() {
 	delay(200);
 
 	if (timeStatus() != timeSet)
-		Serial.println("RTC fail"); //синхронизация не удаласть
+		Serial.println("RTC fail");
 	else {
 		Serial.println("RTC set");
 		digitalWrite(LED_PIN, 1);
@@ -432,7 +265,8 @@ void setup() {
 	Serial.print(F("Threshold: "));
 	Serial.println(THRESHOLD);
 	Serial.println("");
-	print_help();
+
+	reset_channels_state();
 
 	setupTimer2();
 	sleep_enable();
@@ -444,295 +278,188 @@ void setup() {
 //	PRR |= _BV(PRSPI);
 }
 
-
-char cmd_time(char argc, char *argv[]) {
-
-
-	String s;
-	unsigned short int y;
-	tmElements_t tm;
-
-	if ((argc == 1) || (argc > 2)) {
-		Serial.println(F("Usage: time YYYY-MM-DD HH:MM:SS"));
-		return 1;
-	}
-
-	if (argc == 2) {
-		sscanf_P(argv[0], PSTR("%04hu-%02hhu-%02hhu"), &y, &tm.Month, &tm.Day);
-		sscanf_P(argv[1], PSTR("%02hhu:%02hhu:%02hhu"), &tm.Hour, &tm.Minute, &tm.Second);
-
-		tm.Year = y - 1970;
-		if (!RTC.write(tm))
-			Serial.println(F("RTC error"));
-
-		setTime(makeTime(tm));
-		if (!RTC.read(tm))
-			Serial.println(F("RTC error"));
-
-	}
-	printTime(now());
-
-	return 0;
-}
-
-char cmd_ls(char argc, char *argv[]) {
-	if (!sdReady)
-		return 1;
-
-	sd.ls(LS_R);
-
-	return 0;
-}
-
-char cmd_dump(char argc, char *argv[]) {
-	if (argc == 1)
-		return dumpSdLog(argv[0]);
-	else
-		return dumpSdLog(logFilename);
-
-	return 0;
-}
-
-char cmd_raw(char argc, char *argv[]) {
-	raw_measuring = !raw_measuring;
-
-	if (raw_measuring) {
-		if (raw_measuring)
-			stop_timer(IDLE_TIMEOUT_TIMER);
-		else
-			schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
-	}
-
-	return 0;
-}
-
-char cmd_batt(char argc, char *argv[]) {
-	Serial.println(readBattery_mV());
-
-	return 0;
-}
-
-char cmd_poff(char argc, char *argv[]) {
-	digitalWrite(LED_PIN, 1);
-	digitalWrite(PWR_ON_PIN, 0);
-	return 0;
-}
-
-typedef char (*cmd_handler_t)(char argc, char *argv[]);
-
-struct cmd_table_entry {
-	PGM_P cmd;
-	cmd_handler_t handler;
+struct hit {
+	uint8_t channel;
+	uint16_t time;
 };
 
-const char cmd_time_name[] PROGMEM = "time";
-const char cmd_ls_name[] PROGMEM = "ls";
-const char cmd_dump_name[] PROGMEM = "dump";
-const char cmd_raw_name[] PROGMEM = "raw";
-const char cmd_poff_name[] PROGMEM = "poff";
-const char cmd_batt_name[] PROGMEM = "batt";
-
-const struct cmd_table_entry cmd_table[] = {
-	{
-		cmd_time_name,
-		cmd_time,
-	},
-	{
-		cmd_ls_name,
-		cmd_ls,
-	},
-	{
-		cmd_dump_name,
-		cmd_dump,
-	},
-	{
-		cmd_raw_name,
-		cmd_raw,
-	},
-	{
-		cmd_poff_name,
-		cmd_poff,
-	},
-	{
-		cmd_batt_name,
-		cmd_batt,
-	},
+enum channel_state {
+	CH_STATE_IDLE = 0,
+	CH_STATE_PRESSED,
 };
 
-#define MAX_CMD_ARGS	3
+static uint16_t release_trigger_value[NUM_CHANNELS];
+static enum channel_state channels_state[NUM_CHANNELS];
 
-void parse_cmdline(char *buf, uint8_t len) {
-	char *cmd = strtok(buf, " ");
-	char *argv[MAX_CMD_ARGS];
-	uint8_t argc = 0;
-	unsigned char i;
-	char ret = 1;
+static struct hit hit_series[MAX_HITS];
+static uint8_t hit_series_size = 0;
 
-	if (!cmd)
+void reset_channels_state()
+{
+	for (int i = 0; i < NUM_CHANNELS; i++)
+		channels_state[i] = CH_STATE_IDLE;
+}
+
+void print_hits()
+{
+	Serial.print("Hit series: ");
+	Serial.print(hit_series_size);
+	Serial.println(" events:");
+	for (int i = 0; i < hit_series_size; i++) {
+		Serial.print(hit_series[i].channel);
+		Serial.print(":");
+		Serial.print(hit_series[i].time);
+		Serial.print("  ");
+	}
+	Serial.println();
+}
+
+#define DIV_CEIL(a, b)	((a) / (b) + (((a) % (b)) ? 1 : 0))
+
+void process_hit_series()
+{
+	int direction;
+	float speed_kmh = 0.0;
+	uint8_t count;
+
+	print_hits();
+
+	if (!hit_series_size)
 		return;
 
-	while (argc < MAX_CMD_ARGS) {
-		argv[argc] = strtok(NULL, " ");
-		if (argv[argc])
-			argc++;
+	/*
+	* direction:
+	* 0 - from channel 0 to channel 1
+	* 1 - from channel 1 to channel 0
+	*/
+	direction = hit_series[0].channel;
+
+	if (hit_series_size >= 2) {
+		uint16_t wheel_time = hit_series[1].time - hit_series[0].time;
+
+		if (hit_series[0].channel != hit_series[1].channel)
+			speed_kmh = sensors_spacing;
 		else
-			break;
+			speed_kmh = wheel_spacing;
+
+		speed_kmh = speed_kmh * 3.6 / ((float)wheel_time / 1000);
 	}
 
-	for (i = 0; i < ARRAY_SIZE(cmd_table); i++) {
-		if (!strcmp_P(cmd, cmd_table[i].cmd)) {
-			ret = cmd_table[i].handler(argc, argv);
-			break;
-		}
-	}
+	count = DIV_CEIL(hit_series_size, 2);
 
-	if (ret)
-		Serial.println("ERROR");
+	/* Don't save known-invalid speed */
+	if ((count != 1) || (!isfinite(speed_kmh)))
+		speed_kmh = 0;
 
+	logToSd(count, direction, speed_kmh, now(), !raw_measuring);
+	flash_led(count);
+
+	hit_series_size = 0;
 }
 
-#define SERIAL_BUF_LEN	80
+int submit_hit_event(uint8_t ch, unsigned long ts)
+{
+	static unsigned long first_ts;
 
-static char serial_buf[SERIAL_BUF_LEN];
-static uint8_t serial_buf_level = 0;
+	Serial.println("hit!");
 
-void processSerial() {
-	char c;
+	if (hit_series_size == MAX_HITS)
+		return -1;
 
-	while (Serial.available()) {
+	if (hit_series_size == 0)
+		first_ts = ts;
 
-		idle_sleep_mode = SLEEP_MODE_IDLE;
-//		digitalWrite(LED_PIN, 1);
-		if (!raw_measuring)
-			schedule_timer(IDLE_TIMEOUT_TIMER, IDLE_TIMEOUT_MS);
-		else
-			stop_timer(IDLE_TIMEOUT_TIMER);
+	hit_series[hit_series_size].time = ts - first_ts;
+	hit_series[hit_series_size].channel = ch;
 
-		c = Serial.read();
-		Serial.write(c);
+	hit_series_size++;
 
-		digitalWrite(LED_PIN, 1);
-		if ((c == '\r') || (c == '\n')) {
-			if (c == '\r')
-				Serial.write('\n');
+	return 0;
+}
 
-			serial_buf[serial_buf_level] = '\0';
-			serial_buf_level++;
+bool check_event(int ch)
+{
+	static unsigned long hit_time[NUM_CHANNELS];
+	uint16_t trigger_value;
+	uint16_t pressure;
+	bool ret = false;
 
-			parse_cmdline(serial_buf, serial_buf_level);
+	noInterrupts();
+	pressure = pressure_current[ch];
+	trigger_value = biasFilters[ch]->output() + THRESHOLD;
+	interrupts();
 
-			serial_buf_level = 0;
-			Serial.write("> ");
-		} else {
-			if (serial_buf_level < SERIAL_BUF_LEN - 1) {
-				serial_buf[serial_buf_level] = c;
-				serial_buf_level++;
-			}
+	switch (channels_state[ch]) {
+	case CH_STATE_IDLE:
+		if (pressure >= trigger_value) {
+			/* Hit! */
+			release_trigger_value[ch] = trigger_value - HYSTERESIS;
+			hit_time[ch] = millis();
+			is_measuring = 1;
+			channels_state[ch] = CH_STATE_PRESSED;
+			ret = true;
 		}
+		break;
+
+	case CH_STATE_PRESSED:
+		if (pressure < release_trigger_value[ch]
+//			&& millis() > hit_time[ch] + debounce_time_ms
+		) {
+			submit_hit_event(ch, hit_time[ch]);
+			channels_state[ch] = CH_STATE_IDLE;
+		}
+		break;
 	}
-		digitalWrite(LED_PIN, 0);
+
+	return ret;
+}
+
+static bool channels_idle()
+{
+	bool idle = true;
+
+	for (int i = 0; i < NUM_CHANNELS; i++)
+		if (channels_state[i] != CH_STATE_IDLE)
+			idle = false;
+
+	return idle;
 }
 
 void loop() {
-	short unsigned int val;
-	static short unsigned int release_trigger_value = 0;
-	short unsigned int trigger_value; // pressure reading threshold for identifying a bike is pressing.
+	static unsigned long last_hit_time = 0;
+	static unsigned long timeout_time = 0;
 	static unsigned char current_sleep_mode = SLEEP_MODE_EXT_STANDBY;
+	bool hit;
 
-	noInterrupts();
-	val = pressure_current[0];
-	// read local air pressure and create offset.
-	trigger_value = biasFilter0.output() + THRESHOLD;
-	interrupts();
+	hit = check_event(0);
+	hit = check_event(1) || hit;
 
+	if (hit) {
+		current_sleep_mode = SLEEP_MODE_IDLE;
+		last_hit_time = millis();
+		timeout_time = last_hit_time + measurement_timeout;
+	} else if (is_measuring
+		&& channels_idle()
+		&& (millis() >= timeout_time)) {
+		process_hit_series();
+		is_measuring = 0;
+	}
+
+	/* Turn on extended sleep mode if we are in idle state */
 	if (!is_measuring)
 		current_sleep_mode = idle_sleep_mode;
 
-	//1 - TUBE IS PRESSURIZED INITIALLY
-	if (val >= trigger_value) {
-		release_trigger_value = trigger_value - HYSTERESIS;
-		current_sleep_mode = SLEEP_MODE_IDLE;
-		set_sleep_mode(current_sleep_mode);
-
-		if (strike_number == 0 && is_measuring == 0) { // FIRST HIT
-			if (!raw_measuring) {
-				Serial.println("");
-				Serial.println(F("W1"));
-			}
-			first_wheel = millis(); 
-			is_measuring = 1;
-			the_max[0] = val;
-		}
-		if (strike_number == 1 && is_measuring == 1) { // SECOND HIT
-			if (!raw_measuring) {
-				Serial.println(F("W2"));
-			}
-			second_wheel = millis();
-			is_measuring = 0;
-			the_max[1] = val;
-		}
-
-	}
-
-
-	//2 - TUBE IS STILL PRESSURIZED
-	while( val > the_max[strike_number] && is_measuring == 1) { //is being pressed, in all cases. to measure the max pressure.
-		the_max[strike_number] = val; 
-		sleep_mode();
-	}
-
-
-	//3 - TUBE IS RELEASED
-	if ( val < release_trigger_value && count_this == 0) { //released by either wheel
-		if (strike_number == 0 && is_measuring == 1 && (millis() - first_wheel > the_wheel_delay)) {
-			strike_number = 1;
-		}
-		if (strike_number == 1 && is_measuring == 0 && (millis() - second_wheel > the_wheel_delay) ) {
-			count_this = 1;
-		}
-	}
-
-
-	//4 - PRESSURE READING IS ACCEPTED AND RECORDED
-	if (((val < release_trigger_value))
-	&& ((count_this == 1 && is_measuring == 0)
-	|| ((millis() - first_wheel > car_timeout) && (is_measuring == 1)))) {
-		float wheel_time;
-		time_t time = now();
-		make_tone();
-
-		wheel_time = second_wheel - first_wheel;
-
-		if (!raw_measuring) {
-			printTime(time);
-			Serial.print(F("max press = "));
-			Serial.print(the_max[0]);
-			Serial.print(" ");
-			Serial.println(the_max[1]);
-			Serial.print("avg: ");
-			Serial.println(biasFilter0.output());
-		}
-
-		logToSd(wheel_time, time);
-
-		//RESET ALL VALUES
-		strike_number = 0;
-		count_this = 0;
-		is_measuring = 0;
-		current_sleep_mode = idle_sleep_mode;
-
-	}
-
 	processSerial();
 
-	try_timers();
+	/*
+	* Try to execute timers. If any timer remains active, don't enter to
+	* extended standby mode, go to idle mode.
+	*/
+	if (try_timers())
+		current_sleep_mode = SLEEP_MODE_IDLE;
 
 	Serial.flush();
 
 	set_sleep_mode(current_sleep_mode);
 	sleep_mode();
 }
-
-
-
-
