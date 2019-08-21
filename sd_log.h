@@ -8,7 +8,8 @@
 void setup_sd();
 int sdFileOpen();
 char dumpSdLog(char *file);
-int logToSd(int count, int direction, float speed, time_t time, bool verbose);
+int logToSd(int count, int direction,
+	    float speed, float length, time_t time, bool verbose);
 int isSdReady(void);
 char *currentLogFilename(void);
 

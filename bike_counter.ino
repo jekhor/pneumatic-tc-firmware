@@ -321,6 +321,7 @@ void process_hit_series()
 {
 	int direction;
 	float speed_kmh = 0.0;
+	float length = 0.0;
 	uint8_t bike_count;
 	uint8_t channel_count[NUM_CHANNELS];
 	uint8_t max_ch_count = 0;
@@ -335,10 +336,15 @@ void process_hit_series()
 
 	/*
 	* direction:
-	* 0 - from channel 0 to channel 1
-	* 1 - from channel 1 to channel 0
+	* 0 - unknown
+	* 1 - from channel 0 to channel 1
+	* 2 - from channel 1 to channel 0
 	*/
-	direction = hit_series[0].channel;
+	if ((hit_series_size == 1)
+	    || (hit_series[0].channel == hit_series[1].channel))
+		direction = 0;
+	else
+		direction = hit_series[0].channel + 1;
 
 	if (hit_series_size >= 2) {
 		uint16_t wheel_time = hit_series[1].time - hit_series[0].time;
@@ -349,6 +355,20 @@ void process_hit_series()
 			speed_kmh = wheel_spacing;
 
 		speed_kmh = speed_kmh * 3.6 / ((float)wheel_time / 1000);
+
+		/* Calculate vehicle length if it has two wheels and they are
+		 * registered both
+		 */
+		if ((hit_series_size > 2) && (hit_series_size <= 4)) {
+			uint16_t time_ms;
+
+			for (int i = 1; i < hit_series_size; i++)
+				if (hit_series[i].channel == hit_series[0].channel) {
+					time_ms = hit_series[i].time - hit_series[0].time;
+					length = speed_kmh / 3.6 * time_ms / 1000;
+					break;
+				}
+		}
 	}
 
 	for (int i = 0; i < hit_series_size; i++)
@@ -361,10 +381,12 @@ void process_hit_series()
 	bike_count = DIV_CEIL(max_ch_count, 2);
 
 	/* Don't save known-invalid speed */
-	if ((bike_count != 1) || (!isfinite(speed_kmh)))
+	if ((bike_count != 1) || (!isfinite(speed_kmh))) {
 		speed_kmh = 0;
+		length = 0;
+	}
 
-	logToSd(bike_count, direction, speed_kmh, now(), !raw_measuring);
+	logToSd(bike_count, direction, speed_kmh, length, now(), !raw_measuring);
 	flash_led(bike_count);
 
 	hit_series_size = 0;

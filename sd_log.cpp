@@ -91,7 +91,7 @@ int sdFileOpen()
 		if (dataFile.open(logFilename, O_CREAT | O_WRITE | O_APPEND)) {
 			dataFileOpened = 1;
 			if (!exists)
-				dataFile.println(F("ts,time,count,direction,speed,bat_mV"));
+				dataFile.println(F("ts,time,count,direction,speed,length,bat_mV"));
 		} else {
 			Serial.println(F("Cannot open logfile"));
 			return 1;
@@ -101,7 +101,7 @@ int sdFileOpen()
 	return 0;
 }
 
-int logToSd(int count, int direction, float speed, time_t time, bool verbose)
+int logToSd(int count, int direction, float speed, float length, time_t time, bool verbose)
 {
 	static char buf[STRBUF_TIME_SIZE];
 
@@ -124,6 +124,8 @@ int logToSd(int count, int direction, float speed, time_t time, bool verbose)
 		Serial.print(direction);
 		Serial.print(",");
 		Serial.print(speed);
+		Serial.print(",");
+		Serial.print(length);
 		Serial.print(",");
 		Serial.println(readBattery_mV());
 	}
