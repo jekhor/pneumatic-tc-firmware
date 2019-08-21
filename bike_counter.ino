@@ -40,6 +40,7 @@ static const int measurement_timeout = 1000; // 3,8 km/h minimal speed
 
 bool is_measuring = 0;
 volatile bool bt_enabled = 0;
+volatile unsigned long bt_enabled_at = 0;
 enum bt_mode bluetooth_mode = BT_AUTO;
 uint8_t idle_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 
@@ -151,6 +152,7 @@ void setupEEPROM() {
 
 void btstart_isr() {
 	bt_enabled = 1;
+	bt_enabled_at = millis();
 	digitalWrite(BT_EN_PIN, HIGH);
 	digitalWrite(LED_PIN, HIGH);
 
@@ -434,6 +436,16 @@ bool check_event(int ch)
 	return ret;
 }
 
+static void check_for_poweroff(void)
+{
+	if (bt_enabled
+	    && (millis() - bt_enabled_at > BT_EN_POWEROFF_TIMEOUT_MS)) {
+		digitalWrite(LED_PIN, 1);
+		delay(1000);
+		digitalWrite(PWR_ON_PIN, 0);
+	}
+}
+
 static bool channels_idle()
 {
 	bool idle = true;
@@ -477,6 +489,8 @@ void loop() {
 		current_sleep_mode = SLEEP_MODE_IDLE;
 
 	Serial.flush();
+
+	check_for_poweroff();
 
 	set_sleep_mode(current_sleep_mode);
 	sleep_mode();

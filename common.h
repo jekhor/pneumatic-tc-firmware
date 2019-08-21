@@ -12,6 +12,8 @@
 
 #define LOCAL_TIME_OFFSET (3 * SECS_PER_HOUR)
 
+#define BT_EN_POWEROFF_TIMEOUT_MS 10000
+
 #define ARRAY_SIZE(_a)	(sizeof(_a) / sizeof((_a)[0]))
 
 #define NUM_CHANNELS	2
