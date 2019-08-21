@@ -76,6 +76,7 @@ int sdFileOpen()
 	}
 
 	if (!dataFileOpened) {
+		bool exists;
 
 #ifdef DEBUG_MEMORY
 		Serial.print(F("freeMemory()="));
@@ -85,10 +86,12 @@ int sdFileOpen()
 		make_filename(logFilename, t);
 
 		Serial.println(logFilename);
+		exists = sd.exists(logFilename);
 
 		if (dataFile.open(logFilename, O_CREAT | O_WRITE | O_APPEND)) {
 			dataFileOpened = 1;
-			dataFile.println(F("ts,time,count,direction,speed,bat_mV"));
+			if (!exists)
+				dataFile.println(F("ts,time,count,direction,speed,bat_mV"));
 		} else {
 			Serial.println(F("Cannot open logfile"));
 			return 1;
