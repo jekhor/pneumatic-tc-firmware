@@ -35,7 +35,7 @@ enum led_state_t {
 	LED_ON,
 };
 
-static const int debounce_time_ms = 8;
+static const int debounce_time_ms = 90;
 static const int measurement_timeout = 1000; // 3,8 km/h minimal speed
 
 bool is_measuring = 0;
@@ -142,7 +142,6 @@ void acquirePressure() {
 		Serial.print((short unsigned int)biasFilter0.output());
 		Serial.print(' ');
 		Serial.println((short unsigned int)biasFilter1.output());
-//		printf_P(PSTR("%u %u %u %u\n"), val[0], val[1], (short unsigned int)biasFilter0.output(), (short unsigned int)biasFilter1.output());
 	}
 }
 
@@ -223,11 +222,6 @@ void setup() {
 
 	Serial.begin(57600);
 
-	Serial.print("UBRR0L: ");
-	Serial.println(UBRR0L);
-	Serial.print("UCSR0A: ");
-	Serial.println(UCSR0A);
-
 	digitalWrite(LED_PIN, 1);
 	delay(20);
 	digitalWrite(LED_PIN, 0);
@@ -276,6 +270,10 @@ void setup() {
 //	PRR |= _BV(PRTIM2);
 //	PRR |= _BV(PRTWI);
 //	PRR |= _BV(PRSPI);
+
+
+//	raw_measuring = true;
+//	stop_timer(IDLE_TIMEOUT_TIMER);
 }
 
 struct hit {
@@ -286,6 +284,7 @@ struct hit {
 enum channel_state {
 	CH_STATE_IDLE = 0,
 	CH_STATE_PRESSED,
+	CH_STATE_RELEASED,
 };
 
 static uint16_t release_trigger_value[NUM_CHANNELS];
@@ -320,12 +319,17 @@ void process_hit_series()
 {
 	int direction;
 	float speed_kmh = 0.0;
-	uint8_t count;
+	uint8_t bike_count;
+	uint8_t channel_count[NUM_CHANNELS];
+	uint8_t max_ch_count = 0;
 
 	print_hits();
 
 	if (!hit_series_size)
 		return;
+
+	for (int i = 0; i < NUM_CHANNELS; i++)
+		channel_count[i] = 0;
 
 	/*
 	* direction:
@@ -345,14 +349,21 @@ void process_hit_series()
 		speed_kmh = speed_kmh * 3.6 / ((float)wheel_time / 1000);
 	}
 
-	count = DIV_CEIL(hit_series_size, 2);
+	for (int i = 0; i < hit_series_size; i++)
+		channel_count[hit_series[i].channel]++;
+
+	for (int i = 0; i < NUM_CHANNELS; i++)
+		if (max_ch_count < channel_count[i])
+			max_ch_count = channel_count[i];
+
+	bike_count = DIV_CEIL(max_ch_count, 2);
 
 	/* Don't save known-invalid speed */
-	if ((count != 1) || (!isfinite(speed_kmh)))
+	if ((bike_count != 1) || (!isfinite(speed_kmh)))
 		speed_kmh = 0;
 
-	logToSd(count, direction, speed_kmh, now(), !raw_measuring);
-	flash_led(count);
+	logToSd(bike_count, direction, speed_kmh, now(), !raw_measuring);
+	flash_led(bike_count);
 
 	hit_series_size = 0;
 }
@@ -361,7 +372,8 @@ int submit_hit_event(uint8_t ch, unsigned long ts)
 {
 	static unsigned long first_ts;
 
-	Serial.println("hit!");
+	if (!raw_measuring)
+		Serial.println("hit!");
 
 	if (hit_series_size == MAX_HITS)
 		return -1;
@@ -380,6 +392,8 @@ int submit_hit_event(uint8_t ch, unsigned long ts)
 bool check_event(int ch)
 {
 	static unsigned long hit_time[NUM_CHANNELS];
+	static unsigned long release_time[NUM_CHANNELS];
+	unsigned long now = millis();
 	uint16_t trigger_value;
 	uint16_t pressure;
 	bool ret = false;
@@ -394,7 +408,7 @@ bool check_event(int ch)
 		if (pressure >= trigger_value) {
 			/* Hit! */
 			release_trigger_value[ch] = trigger_value - HYSTERESIS;
-			hit_time[ch] = millis();
+			hit_time[ch] = now;
 			is_measuring = 1;
 			channels_state[ch] = CH_STATE_PRESSED;
 			ret = true;
@@ -402,12 +416,18 @@ bool check_event(int ch)
 		break;
 
 	case CH_STATE_PRESSED:
-		if (pressure < release_trigger_value[ch]
-//			&& millis() > hit_time[ch] + debounce_time_ms
-		) {
+		if (pressure < release_trigger_value[ch]) {
+			release_time[ch] = now;
 			submit_hit_event(ch, hit_time[ch]);
-			channels_state[ch] = CH_STATE_IDLE;
+			channels_state[ch] = CH_STATE_RELEASED;
+			ret = true;
 		}
+		break;
+
+	case CH_STATE_RELEASED:
+		/* use substraction to handle millis() overflow correctly */
+		if (now - debounce_time_ms > release_time[ch])
+			channels_state[ch] = CH_STATE_IDLE;
 		break;
 	}
 
@@ -427,7 +447,6 @@ static bool channels_idle()
 
 void loop() {
 	static unsigned long last_hit_time = 0;
-	static unsigned long timeout_time = 0;
 	static unsigned char current_sleep_mode = SLEEP_MODE_EXT_STANDBY;
 	bool hit;
 
@@ -437,10 +456,9 @@ void loop() {
 	if (hit) {
 		current_sleep_mode = SLEEP_MODE_IDLE;
 		last_hit_time = millis();
-		timeout_time = last_hit_time + measurement_timeout;
 	} else if (is_measuring
 		&& channels_idle()
-		&& (millis() >= timeout_time)) {
+		&& (millis() - measurement_timeout >= last_hit_time)) {
 		process_hit_series();
 		is_measuring = 0;
 	}
