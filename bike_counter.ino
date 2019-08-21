@@ -438,7 +438,7 @@ bool check_event(int ch)
 
 static void check_for_poweroff(void)
 {
-	if (bt_enabled
+	if ((digitalRead(BT_START_PIN) == LOW)
 	    && (millis() - bt_enabled_at > BT_EN_POWEROFF_TIMEOUT_MS)) {
 		digitalWrite(LED_PIN, 1);
 		delay(1000);
