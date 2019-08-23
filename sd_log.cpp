@@ -1,6 +1,7 @@
 
 #include <SPI.h>
 #include <SdFat.h>
+#include <errno.h>
 #include "sd_log.h"
 #include "common.h"
 
@@ -11,8 +12,10 @@ static bool sdReady = 0;
 
 SdFat sd;
 static SdFile dataFile;
+static SdFile rawLogFile;
 
 static bool dataFileOpened = 0;
+static bool rawFileOpened = 0;
 static uint8_t dataFileHour;
 static char logFilename[13]; /* 8.3 filename + \0 */
 
@@ -58,9 +61,9 @@ static char *make_filename(char *buf, time_t time)
 	itoa_10lz(p, hour(time), 2);
 	p += 2;
 	p[0] = '.';
-	p[1] = 'L';
-	p[2] = 'O';
-	p[3] = 'G';
+	p[1] = 'C';
+	p[2] = 'S';
+	p[3] = 'V';
 	p[4] = '\0';
 
 	return buf;
@@ -101,15 +104,23 @@ int sdFileOpen()
 	return 0;
 }
 
+int sdRawFileOpen()
+{
+	if (!rawFileOpened) {
+		if (rawLogFile.open("raw.log", O_CREAT | O_WRITE | O_APPEND)) {
+			rawFileOpened = 1;
+		} else {
+			Serial.println(F("Cannot open raw log file"));
+			return -EIO;
+		}
+	}
+
+	return 0;
+}
+
 int logToSd(int count, int direction, float speed, float length, time_t time, bool verbose)
 {
 	static char buf[STRBUF_TIME_SIZE];
-
-	if (speed < 0)
-		speed = 0;
-
-//	Serial.print("Speed km/h ");
-//	Serial.println(speed);
 
 	sprintf_time(buf, time);
 
@@ -157,6 +168,29 @@ int logToSd(int count, int direction, float speed, float length, time_t time, bo
 
 	return 0;
 }
+
+int logToSdRaw(time_t time, struct hit *hit_series, uint8_t count)
+{
+	if (!sdReady)
+		return -EIO;
+
+	if (sdRawFileOpen())
+		return -EIO;
+
+		rawLogFile.print(localtime2utc(time));
+		rawLogFile.print(", ");
+	for (int i = 0; i < count; i++) {
+		rawLogFile.print(hit_series[i].channel);
+		rawLogFile.print(":");
+		rawLogFile.print(hit_series[i].time);
+		rawLogFile.print(" ");
+	}
+	rawLogFile.println();
+	rawLogFile.sync();
+
+	return 0;	
+}
+
 
 char dumpSdLog(char *file)
 {

@@ -278,11 +278,6 @@ void setup() {
 //	stop_timer(IDLE_TIMEOUT_TIMER);
 }
 
-struct hit {
-	uint8_t channel;
-	uint16_t time;
-};
-
 enum channel_state {
 	CH_STATE_IDLE = 0,
 	CH_STATE_PRESSED,
@@ -310,7 +305,7 @@ void print_hits()
 		Serial.print(hit_series[i].channel);
 		Serial.print(":");
 		Serial.print(hit_series[i].time);
-		Serial.print("  ");
+		Serial.print(" ");
 	}
 	Serial.println();
 }
@@ -326,6 +321,7 @@ void process_hit_series()
 	uint8_t channel_count[NUM_CHANNELS];
 	uint8_t max_ch_count = 0;
 
+	Serial.println();
 	print_hits();
 
 	if (!hit_series_size)
@@ -386,7 +382,10 @@ void process_hit_series()
 		length = 0;
 	}
 
-	logToSd(bike_count, direction, speed_kmh, length, now(), !raw_measuring);
+	time_t time = now();
+	logToSd(bike_count, direction, speed_kmh, length, time, !raw_measuring);
+	logToSdRaw(time, hit_series, hit_series_size);
+
 	flash_led(bike_count);
 
 	hit_series_size = 0;
@@ -397,7 +396,7 @@ int submit_hit_event(uint8_t ch, unsigned long ts)
 	static unsigned long first_ts;
 
 	if (!raw_measuring)
-		Serial.println("hit!");
+		Serial.print(".");
 
 	if (hit_series_size == MAX_HITS)
 		return -1;

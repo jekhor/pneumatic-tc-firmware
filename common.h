@@ -12,6 +12,8 @@
 
 #define LOCAL_TIME_OFFSET (3 * SECS_PER_HOUR)
 
+#define localtime2utc(time) ((time) - LOCAL_TIME_OFFSET)
+
 #define BT_EN_POWEROFF_TIMEOUT_MS 10000
 
 #define ARRAY_SIZE(_a)	(sizeof(_a) / sizeof((_a)[0]))
@@ -19,7 +21,7 @@
 #define NUM_CHANNELS	2
 #define THRESHOLD	25
 #define HYSTERESIS	6
-#define MAX_HITS	16
+#define MAX_HITS	32
 
 #define LED_PIN			4
 #define PRESSURE_SENS_EN_PIN	3
@@ -32,6 +34,11 @@
 enum bt_mode {
 	BT_AUTO,
 	BT_PERMANENT,
+};
+
+struct hit {
+	uint8_t channel;
+	uint16_t time;
 };
 
 
