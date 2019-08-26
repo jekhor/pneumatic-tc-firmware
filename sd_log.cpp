@@ -199,7 +199,10 @@ char dumpSdLog(char *file)
 	if (!sdReady)
 		return 1;
 
-	sdFileOpen();
+	if (!file) {
+		sdFileOpen();
+		file = currentLogFilename();
+	}
 
 	if (dataFileOpened) {
 		dataFile.close();

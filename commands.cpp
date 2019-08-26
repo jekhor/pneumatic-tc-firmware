@@ -2,6 +2,7 @@
 #include <Arduino.h>
 #include <Time.h>
 #include <DS1307RTC.h>
+#include <SdFat.h>
 
 #include "common.h"
 #include "sd_log.h"
@@ -79,8 +80,44 @@ static char cmd_ls(char, char *[]) {
 	if (!isSdReady())
 		return 1;
 
-	sd.ls(LS_R);
+	sd.ls(LS_R | LS_SIZE);
 
+	return 0;
+}
+
+static SdFile root;
+static SdFile file;
+static char filename[13];
+
+static char cmd_dumpall(char, char *[])
+{
+	if (!isSdReady())
+		return 1;
+
+	if (!root.open("/")) {
+		Serial.println(F("Root open failed"));
+		return 1;
+	}
+
+	while (file.openNext(&root, O_RDONLY)) {
+		if (file.isDir())
+			goto next_file;
+
+
+		if (!file.getName(filename, sizeof(filename)))
+			goto next_file;
+
+		if (!strstr(filename, ".CSV"))
+			goto next_file;
+
+		Serial.println(filename);
+		dumpSdLog(filename);
+
+next_file:
+		file.close();
+	}
+
+	root.close();
 	return 0;
 }
 
@@ -88,7 +125,7 @@ static char cmd_dump(char argc, char *argv[]) {
 	if (argc == 1)
 		return dumpSdLog(argv[0]);
 	else
-		return dumpSdLog(currentLogFilename());
+		return dumpSdLog(NULL);
 
 	return 0;
 }
@@ -142,6 +179,7 @@ static char cmd_help(char, char *[]) {
 	" raw\t\t\t\t - toggle raw dump\n"
 	" ls\t\t\t\t - list files on SD\n"
 	" dump [file]\t\t\t - dump file content\n"
+	" dumpall [file]\t\t\t - dump all logs content\n"
 	" batt\t\t\t\t - show battery voltage\n"
 	" bt [on|auto]\t\t\t - bluetooth enabled permanently/on demand (by magnet)\n"
 	));
@@ -159,6 +197,7 @@ struct cmd_table_entry {
 static const char cmd_time_name[] PROGMEM = "time";
 static const char cmd_ls_name[] PROGMEM = "ls";
 static const char cmd_dump_name[] PROGMEM = "dump";
+static const char cmd_dumpall_name[] PROGMEM = "dumpall";
 static const char cmd_raw_name[] PROGMEM = "raw";
 static const char cmd_poff_name[] PROGMEM = "poff";
 static const char cmd_batt_name[] PROGMEM = "batt";
@@ -171,6 +210,7 @@ static PROGMEM const struct cmd_table_entry cmd_table[] = {
 	CMD(time),
 	CMD(ls),
 	CMD(dump),
+	CMD(dumpall),
 	CMD(raw),
 	CMD(poff),
 	CMD(batt),
