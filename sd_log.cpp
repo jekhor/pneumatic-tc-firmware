@@ -163,6 +163,8 @@ int logToSd(int count, int direction, float speed, float length, time_t time, bo
 	dataFile.print(",");
 	dataFile.print(speed);
 	dataFile.print(",");
+	dataFile.print(length);
+	dataFile.print(",");
 	dataFile.println(readBattery_mV());
 	dataFile.sync();
 
