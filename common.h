@@ -45,7 +45,7 @@ struct hit {
 // average spacing between wheels of bicycle in meters
 const float wheel_spacing = 1.06;
 /* 25 cm between two parallel sensors */
-const float sensors_spacing = 0.25;
+const float sensors_spacing = 0.5;
 
 extern bool raw_measuring;
 extern enum bt_mode bluetooth_mode;
