@@ -53,6 +53,11 @@ static char cmd_time(char argc, char *argv[]) {
 	unsigned short int y;
 	tmElements_t tm;
 
+	if (argc == 0) {
+		printTime(now());
+		return 0;
+	}
+
 	if (argc != 2) {
 		Serial.println(F("Usage: time YYYY-MM-DD HH:MM:SS"));
 		return 1;
