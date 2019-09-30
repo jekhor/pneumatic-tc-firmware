@@ -85,12 +85,11 @@ static char cmd_ls(char, char *[]) {
 	if (!isSdReady())
 		return 1;
 
-	sd.ls(LS_R | LS_SIZE);
+	root.ls(LS_SIZE);
 
 	return 0;
 }
 
-static SdFile root;
 static SdFile file;
 static char filename[13];
 
@@ -99,15 +98,12 @@ static char cmd_dumpall(char, char *[])
 	if (!isSdReady())
 		return 1;
 
-	if (!root.open("/")) {
-		Serial.println(F("Root open failed"));
-		return 1;
-	}
+	root.close();
+	root.open(sd_counter_dir, O_READ);
 
 	while (file.openNext(&root, O_RDONLY)) {
 		if (file.isDir())
 			goto next_file;
-
 
 		if (!file.getName(filename, sizeof(filename)))
 			goto next_file;
@@ -122,7 +118,6 @@ next_file:
 		file.close();
 	}
 
-	root.close();
 	return 0;
 }
 

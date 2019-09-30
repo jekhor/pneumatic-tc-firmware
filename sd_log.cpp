@@ -11,6 +11,7 @@ const uint8_t sd_CS = 10;
 static bool sdReady = 0;
 
 SdFat sd;
+SdFile root;
 static SdFile dataFile;
 static SdFile rawLogFile;
 
@@ -29,23 +30,33 @@ char *currentLogFilename(void)
 	return logFilename;
 }
 
+const char sd_counter_dir[] = "/counter";
+
 void setup_sd()
 {
 	Serial.print(F("\nInit SD..."));
 
-	if (sd.begin(sd_CS, SPI_SPEED)) {
-		Serial.println(F("SD OK"));
-		sdReady = 1;
-	} else {
-		Serial.println(F("SD init failed"));
-		sd.initErrorPrint();
-		return;
-	}
+	if (!sd.begin(sd_CS, SPI_SPEED))
+		goto err;
+	
+	if (!sd.exists(sd_counter_dir))
+		sd.mkdir(sd_counter_dir);
+
+	if (!root.open(sd_counter_dir, O_READ))
+		goto err;
+
+	sdReady = 1;
+	Serial.println(F("SD OK"));
 
 #ifdef DEBUG_MEMORY
 	Serial.print(F("freeMemory()="));
 	Serial.println(freeMemory());
 #endif
+
+	return;
+err:
+	sdReady = 0;
+	Serial.println(F("SD ERROR"));
 }
 
 static char *make_filename(char *buf, time_t time)
@@ -89,9 +100,10 @@ int sdFileOpen()
 		make_filename(logFilename, t);
 
 		Serial.println(logFilename);
-		exists = sd.exists(logFilename);
+		exists = root.exists(logFilename);
 
-		if (dataFile.open(logFilename, O_CREAT | O_WRITE | O_APPEND)) {
+		if (dataFile.open(&root,
+				  logFilename, O_CREAT | O_WRITE | O_APPEND)) {
 			dataFileOpened = 1;
 			if (!exists)
 				dataFile.println(F("ts,time,count,direction,speed,length,bat_mV"));
@@ -107,7 +119,8 @@ int sdFileOpen()
 int sdRawFileOpen()
 {
 	if (!rawFileOpened) {
-		if (rawLogFile.open("raw.log", O_CREAT | O_WRITE | O_APPEND)) {
+		if (rawLogFile.open(&root,
+				    "raw.log", O_CREAT | O_WRITE | O_APPEND)) {
 			rawFileOpened = 1;
 		} else {
 			Serial.println(F("Cannot open raw log file"));
@@ -209,8 +222,9 @@ char dumpSdLog(char *file)
 		dataFileOpened = 0;
 	}
 
-	if (!dataFile.open(file, O_READ)) {
-		Serial.println(F("Failed to open file"));
+	if (!dataFile.open(&root, file, O_READ)) {
+		Serial.print(F("Failed to open file "));
+		Serial.println(file);
 		return 1;
 	}
 

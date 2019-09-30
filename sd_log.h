@@ -5,6 +5,8 @@
 #include <Time.h>
 #include <SdFat.h>
 
+extern const char sd_counter_dir[];
+
 void setup_sd();
 int sdFileOpen();
 char dumpSdLog(char *file);
@@ -15,5 +17,6 @@ int isSdReady(void);
 char *currentLogFilename(void);
 
 extern SdFat sd;
+extern SdFile root;
 
 #endif /* _SD_LOG_H */
