@@ -172,6 +172,13 @@ static char cmd_bt(char argc, char *argv[]) {
 	return 0;
 }
 
+static char cmd_ver(char, char *[])
+{
+	Serial.println(F("Build: " __DATE__ " " __TIME__));
+
+	return 0;
+}
+
 static char cmd_help(char, char *[]) {
 	puts_P(PSTR(
 	"Commands:\n"
@@ -182,6 +189,7 @@ static char cmd_help(char, char *[]) {
 	" dumpall [file]\t\t\t - dump all logs content\n"
 	" batt\t\t\t\t - show battery voltage\n"
 	" bt [on|auto]\t\t\t - bluetooth enabled permanently/on demand (by magnet)\n"
+	" ver \t\t\t\t – show firmware version\n"
 	));
 
 	return 0;
@@ -202,6 +210,7 @@ static const char cmd_raw_name[] PROGMEM = "raw";
 static const char cmd_poff_name[] PROGMEM = "poff";
 static const char cmd_batt_name[] PROGMEM = "batt";
 static const char cmd_bt_name[] PROGMEM = "bt";
+static const char cmd_ver_name[] PROGMEM = "ver";
 static const char cmd_help_name[] PROGMEM = "help";
 
 #define CMD(name) {cmd_ ## name ## _name, cmd_ ## name}
@@ -215,6 +224,7 @@ static PROGMEM const struct cmd_table_entry cmd_table[] = {
 	CMD(poff),
 	CMD(batt),
 	CMD(bt),
+	CMD(ver),
 	CMD(help),
 };
 
