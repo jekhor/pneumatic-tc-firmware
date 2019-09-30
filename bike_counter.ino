@@ -222,7 +222,8 @@ void setup() {
 	analogRead(A0); // reset ADC value after change reference
 	analogRead(A1); // reset ADC value after change reference
 
-	Serial.begin(57600);
+//	Serial.begin(57600);
+	Serial.begin(230400);
 
 	digitalWrite(LED_PIN, 1);
 	delay(20);
