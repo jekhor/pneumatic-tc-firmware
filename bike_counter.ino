@@ -344,27 +344,33 @@ void process_hit_series()
 		direction = hit_series[0].channel + 1;
 
 	if (hit_series_size >= 2) {
-		uint16_t wheel_time = hit_series[1].time - hit_series[0].time;
+		uint16_t wheel_time = 0;
 
-		if (hit_series[0].channel != hit_series[1].channel)
-			speed_kmh = sensors_spacing;
-		else
-			speed_kmh = wheel_spacing;
+		for (int i = 0; i< hit_series_size; i++)
+			if (hit_series[i].channel != hit_series[0].channel) {
+				wheel_time = hit_series[1].time - hit_series[0].time;
+				break;
+			}
 
-		speed_kmh = speed_kmh * 3.6 / ((float)wheel_time / 1000);
+		if (wheel_time) {
+			float speed_mps;
 
-		/* Calculate vehicle length if it has two wheels and they are
-		 * registered both
-		 */
-		if ((hit_series_size > 2) && (hit_series_size <= 4)) {
-			uint16_t time_ms;
+			speed_mps = sensors_spacing / ((float)wheel_time / 1000);
 
-			for (int i = 1; i < hit_series_size; i++)
-				if (hit_series[i].channel == hit_series[0].channel) {
-					time_ms = hit_series[i].time - hit_series[0].time;
-					length = speed_kmh / 3.6 * time_ms / 1000;
-					break;
-				}
+			/* Calculate vehicle length if it has two wheels and they are
+			 * registered both
+			 */
+			if ((hit_series_size > 2) && (hit_series_size <= 4)) {
+				uint16_t time_ms;
+
+				for (int i = 1; i < hit_series_size; i++)
+					if (hit_series[i].channel == hit_series[0].channel) {
+						time_ms = hit_series[i].time - hit_series[0].time;
+						length = speed_mps * time_ms / 1000;
+						break;
+					}
+			}
+			speed_kmh = speed_mps * 3.6;
 		}
 	}
 
