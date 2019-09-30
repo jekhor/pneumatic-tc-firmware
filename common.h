@@ -41,10 +41,7 @@ struct hit {
 	uint16_t time;
 };
 
-
-// average spacing between wheels of bicycle in meters
-const float wheel_spacing = 1.06;
-/* 25 cm between two parallel sensors */
+/* 50 cm between two parallel sensors */
 const float sensors_spacing = 0.5;
 
 extern bool raw_measuring;
